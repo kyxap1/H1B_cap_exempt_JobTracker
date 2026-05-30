@@ -3,11 +3,8 @@
 from __future__ import annotations
 
 import re
-import time
-import random
 from dataclasses import dataclass, field
 from pathlib import Path
-from zoneinfo import ZoneInfo
 
 # ---------------------------------------------------------------------------
 # Paths
@@ -19,12 +16,10 @@ COMPANIES_CSV = PROJECT_DIR / "h1b_cap_exempt_sponsors.csv"
 CHECKPOINT    = PROJECT_DIR / "h1b_cap_exempt_checkpoint.json"
 
 # ---------------------------------------------------------------------------
-# Scrapper settings
+# Pipeline settings
 # ---------------------------------------------------------------------------
 
-TOP_N        = 1000
-POLITE_DELAY = (0.6, 1.4)
-PST          = ZoneInfo("America/Los_Angeles")
+TOP_N = 1000
 
 DOL_FILES = {
     2024: "https://www.dol.gov/sites/dolgov/files/ETA/oflc/pdfs/LCA_Disclosure_Data_FY2024_Q4.xlsx",
@@ -40,35 +35,18 @@ CAP_EXEMPT_KEYWORDS = (
 )
 
 # ---------------------------------------------------------------------------
-# Careers-finder settings
-# ---------------------------------------------------------------------------
-
-CAREERS_KEYWORDS = ("career", "careers", "job", "jobs", "employment", "work-with-us")
-
-AGGREGATOR_BLOCKLIST = (
-    "linkedin.com", "indeed.com", "glassdoor.com", "ziprecruiter.com",
-    "h1bgrader.com", "myvisajobs.com", "monster.com", "wikipedia.org",
-    "google.com", "youtube.com", "facebook.com", "twitter.com",
-)
-
-# ---------------------------------------------------------------------------
 # Data model
 # ---------------------------------------------------------------------------
 
 @dataclass
 class Company:
     name: str
-    counts: dict = field(default_factory=dict)   # year -> int
+    counts: dict = field(default_factory=dict)
     state: str = ""
-    careers_page: str = ""
 
 # ---------------------------------------------------------------------------
 # Helpers
 # ---------------------------------------------------------------------------
-
-def polite_sleep() -> None:
-    time.sleep(random.uniform(*POLITE_DELAY))
-
 
 def normalize_name(name: str) -> str:
     s = name.lower().strip()
