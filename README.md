@@ -1,17 +1,18 @@
 # H1B Cap-Exempt Employer Scraper
 
-A Python pipeline that identifies cap-exempt H1B employers from U.S. Department of Labor LCA disclosure data and ranks them by sponsorship volume.
+A Python pipeline that identifies cap-exempt H1B employers from U.S. Department of Labor LCA disclosure data, ranks them by sponsorship volume, and surfaces their careers pages for job seekers.
 
 ## Overview
 
-H1B cap-exempt employers — primarily universities, nonprofit research institutions, and affiliated organizations — are not subject to the annual H1B lottery. This tool automates the process of identifying those employers from public DOL data and ranking them by H1B petition activity.
+H1B cap-exempt employers — primarily universities, nonprofit research institutions, and affiliated organizations — are not subject to the annual H1B lottery. This tool automates the process of identifying those employers from public DOL data, ranking them by H1B petition activity, and finding their careers pages.
 
 ## What it does
 
 1. Downloads DOL OFLC LCA disclosure Excel files for fiscal years 2024-2026
 2. Parses and filters employers based on cap-exempt NAICS codes and name keywords
 3. Aggregates H1B petition counts by year and ranks the top sponsors
-4. Writes the final employer list to `h1b_cap_exempt_sponsors.csv`
+4. Looks up each employer's careers page via Google Search (Serper.dev API)
+5. Writes the final employer list to `h1b_cap_exempt_sponsors.csv`
 
 ## Pipeline
 
@@ -20,7 +21,8 @@ flowchart TD
     A[DOL OFLC LCA Excel Files] --> B[Download LCA Data]
     B --> C[Parse and Filter Cap-Exempt Employers]
     C --> D[Aggregate and Rank Top Sponsors]
-    D --> E[Write Sponsor CSV]
+    D --> E[Find Careers Pages via Google]
+    E --> F[Write Sponsor CSV]
 ```
 
 ## Output
@@ -30,6 +32,7 @@ flowchart TD
 | Column | Description |
 |---|---|
 | `company` | Employer name |
+| `careers_page` | Careers page URL |
 | `state` | Employer state |
 | `h1b_2024` | H1B petition count, FY2024 |
 | `h1b_2025` | H1B petition count, FY2025 |
@@ -45,41 +48,40 @@ Internal resume state used to continue an interrupted run without restarting fro
 
 #### `scraper.py`
 
-Main entry point. Orchestrates the full pipeline: downloads LCA files, parses cap-exempt employers, aggregates counts, and writes the sponsor CSV.
+Main entry point. Orchestrates the full pipeline: downloads LCA files, parses cap-exempt employers, aggregates counts, looks up careers pages, and writes the sponsor CSV.
 
 #### `dol_parser.py`
 
 Downloads DOL LCA Excel files and parses employer records. Applies cap-exempt NAICS code and keyword filters, and returns normalized per-year employer data.
 
+#### `careers_finder.py`
+
+Finds careers page URLs for each employer using the Serper.dev Google Search API. Filters out job aggregators (LinkedIn, Indeed, Glassdoor, etc.) and falls back to the employer's official site if no careers page is found.
+
 #### `config.py`
 
-Shared constants and configuration, including DOL file URLs and cap-exempt filter rules.
+Shared constants and configuration, including DOL file URLs, cap-exempt filter rules, and careers search settings.
 
 ### Planned
 
-The following are planned for future phases and are not yet implemented in the codebase.
+The following scripts exist in the codebase but are not yet integrated into the active pipeline. They are scoped for future phases.
 
-#### `careers_finder.py`
+#### Phase 2 — Job Scraping
 
-Will use the Serper.dev Google Search API to locate careers page URLs for each employer in the sponsor list, filtering out job aggregators (LinkedIn, Indeed, Glassdoor, etc.).
+- **`IT_job.py`** — Scrapes IT job listings directly from employer careers pages and writes results to `it_jobs.csv`.
+- **`ats_scrapers.py`** — ATS-specific scrapers (Greenhouse, Lever, Workday, iCIMS, etc.) and a generic fallback, used by `IT_job.py` to handle a wide range of careers page formats.
+- **`cron_jobs.py`** — Scheduler that chains the full pipeline end-to-end and runs it automatically on a recurring schedule.
 
-#### `IT_job.py`
+#### Phase 3 — UI
 
-Will scrape IT job listings directly from employer careers pages and write results to `it_jobs.csv`.
-
-#### `ats_scrapers.py`
-
-Will provide ATS-specific scrapers (Greenhouse, Lever, Workday, iCIMS, etc.) and a generic fallback, used by `IT_job.py` to extract job listings from a wide range of careers page formats.
-
-#### `cron_jobs.py`
-
-Will orchestrate the end-to-end pipeline on a schedule, chaining `scraper.py` and `IT_job.py` sequentially.
+A web interface for job seekers to search, filter, and browse H1B cap-exempt employers and their open IT positions.
 
 ## Setup
 
 ### Prerequisites
 
 - Python 3.11+
+- A [Serper.dev](https://serper.dev) API key — free tier includes 2,500 searches/month, no credit card required
 
 ### Installation
 
@@ -87,7 +89,14 @@ Will orchestrate the end-to-end pipeline on a schedule, chaining `scraper.py` an
 python3 -m venv venv
 source venv/bin/activate
 pip install -r requirements.txt
-python3 -m playwright install chromium
+```
+
+> **Note:** Run `python3 -m playwright install chromium` when you are ready to use the job scraping phase.
+
+### Configuration
+
+```bash
+export SERPER_API_KEY=your_key_here
 ```
 
 ### Run
@@ -100,7 +109,7 @@ python3 scraper.py
 
 - DOL LCA data reflects petition filings, not hiring outcomes. A high count indicates sponsorship activity, not guaranteed openings.
 - Employer name normalization is heuristic-based; some duplicates or variants may appear.
-- Careers page lookup and job scraping are planned for a future release.
+- Job scraping and the UI are planned for future releases.
 
 ## License
 

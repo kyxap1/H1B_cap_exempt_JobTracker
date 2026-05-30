@@ -4,7 +4,10 @@ Build H1B cap-exempt sponsor list from DOL OFLC LCA data.
 Pipeline:
   1. Download DOL Excel files  → lca_data/
   2. Parse + aggregate         → top N cap-exempt employers
-  3. Write output              → h1b_cap_exempt_sponsors.csv
+  3. Find careers pages        → via Google (Serper.dev API)
+  4. Write output              → h1b_cap_exempt_sponsors.csv
+
+Requires: export SERPER_API_KEY=your_key_here
 """
 
 from __future__ import annotations
@@ -14,9 +17,10 @@ import json
 
 from config import (
     DATA_DIR, COMPANIES_CSV, CHECKPOINT, DOL_FILES, TOP_N,
-    Company, normalize_name,
+    Company, normalize_name, polite_sleep, title_case,
 )
 from dol_parser import download_file, parse_year
+from careers_finder import find_careers_page
 
 
 def load_checkpoint() -> dict:
@@ -34,8 +38,9 @@ def save_checkpoint(data: dict) -> None:
 
 def main() -> None:
     DATA_DIR.mkdir(parents=True, exist_ok=True)
-    state     = load_checkpoint()
-    list_data = state.get("list_data", {})
+    state      = load_checkpoint()
+    list_data  = state.get("list_data", {})
+    enrichment = state.get("enrichment", {})
 
     # Phase 1 — Download
     print("\n=== Phase 1: Downloading DOL LCA data ===")
@@ -57,9 +62,10 @@ def main() -> None:
             save_checkpoint(state)
 
         for norm_key, info in year_data.items():
-            c = companies.setdefault(norm_key, Company(name=info["name"]))
-            if len(info["name"]) > len(c.name):
-                c.name = info["name"]
+            name = title_case(info["name"])
+            c = companies.setdefault(norm_key, Company(name=name))
+            if len(name) > len(c.name):
+                c.name = name
             c.counts[year] = info["count"]
             if not c.state and info.get("state"):
                 c.state = info["state"]
@@ -69,12 +75,32 @@ def main() -> None:
                  reverse=True)[:TOP_N]
     print(f"\n{len(companies)} unique employers → top {len(top)} selected")
 
-    # Phase 3 — Write CSV
+    # Phase 3 — Careers pages
+    print("\n=== Phase 3: Careers page lookup ===")
+    for i, c in enumerate(top, 1):
+        cached = enrichment.get(normalize_name(c.name), {})
+        if "careers_page" in cached:
+            c.careers_page = cached["careers_page"]
+            continue
+        print(f"[{i}/{len(top)}] {c.name}")
+        try:
+            c.careers_page = find_careers_page(c.name)
+        except Exception as e:
+            print(f"  [error] {e}")
+            c.careers_page = ""
+        cached["careers_page"] = c.careers_page
+        enrichment[normalize_name(c.name)] = cached
+        state["enrichment"] = enrichment
+        save_checkpoint(state)
+        polite_sleep()
+
+    # Phase 4 — Write CSV
     with open(COMPANIES_CSV, "w", newline="", encoding="utf-8") as f:
         writer = csv.writer(f)
-        writer.writerow(["company", "state", "h1b_2026", "h1b_2025", "h1b_2024"])
+        writer.writerow(["company", "careers_page", "state",
+                         "h1b_2026", "h1b_2025", "h1b_2024"])
         for c in top:
-            writer.writerow([c.name, c.state,
+            writer.writerow([c.name, c.careers_page, c.state,
                              c.counts.get(2026, ""),
                              c.counts.get(2025, ""),
                              c.counts.get(2024, "")])

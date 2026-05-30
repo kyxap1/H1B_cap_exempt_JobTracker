@@ -16,7 +16,7 @@ try:
 except ImportError:
     sys.exit("curl_cffi required: pip install curl_cffi")
 
-from config import CAP_EXEMPT_NAICS, CAP_EXEMPT_KEYWORDS, normalize_name
+from config import CAP_EXEMPT_NAICS, CAP_EXEMPT_KEYWORDS, normalize_name, title_case
 
 # ---------------------------------------------------------------------------
 # Column resolution (DOL changes names slightly between fiscal years)
@@ -107,7 +107,7 @@ def parse_year(path: Path, year: int) -> dict[str, dict]:
 
     results: dict[str, dict] = {}
     for _, row in df.iterrows():
-        emp   = str(row["EMPLOYER_NAME"]).strip()
+        emp   = title_case(str(row["EMPLOYER_NAME"]).strip())
         naics = str(row.get("NAICS_CODE", "")).strip()
         if not emp or emp.lower() == "nan" or not is_cap_exempt(emp, naics):
             continue

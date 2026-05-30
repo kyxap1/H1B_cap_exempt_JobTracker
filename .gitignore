@@ -23,6 +23,7 @@ lca_data/
 h1b_cap_exempt_checkpoint.json
 it_jobs.csv
 h1b_cap_exempt_sponsors.csv
+h1b_cap_exempt_sponsors_cleaned.csv
 
 # Local config files
 *.local
