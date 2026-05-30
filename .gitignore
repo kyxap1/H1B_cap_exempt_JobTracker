@@ -1,0 +1,37 @@
+# Python virtual environments
+venv/
+.env
+env/
+.venv/
+
+# Python bytecode
+__pycache__/
+*.pyc
+*.pyo
+*.pyd
+
+# macOS
+.DS_Store
+
+# Playwright browser and temp data
+playwright-report/
+
+# Data output files
+lca_data/
+*.xlsx
+*.xls
+*.csv
+h1b_cap_exempt_checkpoint.json
+it_jobs.csv
+h1b_cap_exempt_sponsors.csv
+
+# Local config files
+*.local
+*.env
+
+# IDE files
+.vscode/
+.idea/
+
+# Logs
+*.log
