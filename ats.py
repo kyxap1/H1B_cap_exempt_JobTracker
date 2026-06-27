@@ -94,16 +94,29 @@ def _search_workday(endpoint: str, keyword: str, limit: int) -> list[dict]:
     )
     r.raise_for_status()
     data = r.json()
+    detail_base = endpoint[: -len("/jobs")]
     jobs = []
     for jp in data.get("jobPostings", []):
         path = jp.get("externalPath", "")
-        jobs.append({
+        job = {
             "title": jp.get("title", "").strip(),
             "url": (host + path) if path else "",
             "location": jp.get("locationsText", "").strip(),
             "time_type": jp.get("timeType", "").strip(),
             "posted": jp.get("postedOn", "").strip(),
-        })
+            "country": "",
+        }
+        # The search summary has no country; the job detail does (structured).
+        if path:
+            try:
+                info = cf.get(detail_base + path, impersonate="chrome", timeout=30,
+                              headers={"Accept": "application/json"}).json()
+                info = info.get("jobPostingInfo", {})
+                job["country"] = (info.get("country") or {}).get("descriptor", "")
+                job["time_type"] = info.get("timeType", job["time_type"])
+            except Exception:
+                pass
+        jobs.append(job)
     return jobs
 
 
@@ -134,6 +147,7 @@ def _search_phenom(endpoint: str, keyword: str, limit: int) -> list[dict]:
                 "location": location,
                 "time_type": time_type,
                 "posted": "",
+                "country": "",
             })
         if len(jobs) >= limit:
             break

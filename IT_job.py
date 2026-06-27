@@ -110,6 +110,15 @@ def jobs_via_fallback(page, careers_url: str) -> list[dict]:
     return [{**j, "matched_keyword": None} for j in jobs]
 
 
+def is_us_job(job: dict) -> bool:
+    """Prefer the ATS's structured country field; fall back to the location
+    string heuristic only when no country is available (e.g. fallback scrape)."""
+    country = (job.get("country") or "").lower()
+    if country:
+        return "united states" in country
+    return is_us_location(job.get("location", ""))
+
+
 # ---------------------------------------------------------------------------
 # Main
 # ---------------------------------------------------------------------------
@@ -166,7 +175,7 @@ def main(limit: int | None = None) -> None:
             for j in jobs:
                 if not j["url"] or j["url"] in seen_urls:
                     continue
-                if not is_us_location(j.get("location", "")):
+                if not is_us_job(j):
                     continue
                 seen_urls.add(j["url"])
                 rec = {
@@ -176,6 +185,7 @@ def main(limit: int | None = None) -> None:
                     "title": j["title"],
                     "url": j["url"],
                     "location": j.get("location", ""),
+                    "country": j.get("country", ""),
                     "time_type": j.get("time_type", ""),
                     "posted": j.get("posted", j.get("date_posted", "")),
                     "scraped_at_pst": scraped_at,
