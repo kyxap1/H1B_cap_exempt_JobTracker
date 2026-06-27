@@ -1,5 +1,5 @@
 
-import csv
+import json
 import subprocess
 import sys
 from datetime import datetime
@@ -10,8 +10,8 @@ PROJECT_DIR = Path(__file__).parent
 PYTHON = sys.executable
 SCRAPPER = PROJECT_DIR / "scraper.py"
 JOB_SCRAPER = PROJECT_DIR / "IT_job.py"
-COMPANIES_CSV = PROJECT_DIR / "h1b_cap_exempt_sponsors.csv"
-JOBS_CSV = PROJECT_DIR / "it_jobs.csv"
+COMPANIES_JSON = PROJECT_DIR / "h1b_cap_exempt_sponsors.json"
+JOBS_JSONL = PROJECT_DIR / "it_jobs.jsonl"
 PST = ZoneInfo("America/Los_Angeles")
 
 
@@ -21,15 +21,17 @@ def log(msg: str) -> None:
 
 
 def companies_need_scraping() -> bool:
-    """Return True if scrapper.py needs to run."""
-    if not COMPANIES_CSV.exists():
+    """Return True if scraper.py needs to run."""
+    if not COMPANIES_JSON.exists():
         return True
-    with open(COMPANIES_CSV, newline="", encoding="utf-8") as f:
-        rows = list(csv.DictReader(f))
+    try:
+        rows = json.loads(COMPANIES_JSON.read_text())
+    except (json.JSONDecodeError, OSError):
+        return True
     if not rows:
         return True
-    # Re-run scrapper if more than 80% of companies have no careers page
-    missing = sum(1 for r in rows if not r.get("careers_page", "").strip())
+    # Re-run scraper if more than 80% of companies have no careers page
+    missing = sum(1 for r in rows if not (r.get("careers_page") or "").strip())
     return missing / len(rows) > 0.8
 
 
@@ -49,23 +51,21 @@ def main() -> None:
 
     # Step 1: Build company + careers page list if needed
     if companies_need_scraping():
-        log("Companies CSV missing or careers pages not filled — running scraper.py --force")
+        log("Companies JSON missing or careers pages not filled — running scraper.py --force")
         if not run(SCRAPPER, "scraper.py", ["--force"]):
             log("scraper.py failed. Aborting pipeline.")
             sys.exit(1)
     else:
-        with open(COMPANIES_CSV, newline="", encoding="utf-8") as f:
-            total = sum(1 for _ in csv.DictReader(f))
-        log(f"Companies CSV already populated ({total} companies). Skipping scrapper.py.")
+        total = len(json.loads(COMPANIES_JSON.read_text()))
+        log(f"Companies JSON already populated ({total} companies). Skipping scraper.py.")
 
     # Step 2: Scrape new IT jobs from careers pages
     run(JOB_SCRAPER, "job_scraper.py")
 
     # Summary
-    if JOBS_CSV.exists():
-        with open(JOBS_CSV, newline="", encoding="utf-8") as f:
-            job_count = sum(1 for _ in csv.DictReader(f))
-        log(f"Total IT jobs in {JOBS_CSV.name}: {job_count}")
+    if JOBS_JSONL.exists():
+        job_count = sum(1 for line in JOBS_JSONL.read_text().splitlines() if line.strip())
+        log(f"Total IT jobs in {JOBS_JSONL.name}: {job_count}")
 
     log("=== Pipeline finished ===")
 

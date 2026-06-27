@@ -12,7 +12,7 @@ H1B cap-exempt employers — primarily universities, nonprofit research institut
 2. Parses and filters employers based on cap-exempt NAICS codes and name keywords
 3. Aggregates H1B petition counts by year and ranks the top sponsors
 4. Looks up each employer's careers page via Google Search (Serper.dev API)
-5. Writes the final employer list to `h1b_cap_exempt_sponsors.csv`
+5. Writes the final employer list to `h1b_cap_exempt_sponsors.json`
 
 ## Pipeline
 
@@ -22,14 +22,17 @@ flowchart TD
     B --> C[Parse and Filter Cap-Exempt Employers]
     C --> D[Aggregate and Rank Top Sponsors]
     D --> E[Find Careers Pages via Google]
-    E --> F[Write Sponsor CSV]
+    E --> F[Write Sponsor JSON]
 ```
 
 ## Output
 
-### `h1b_cap_exempt_sponsors.csv`
+### `h1b_cap_exempt_sponsors.json`
 
-| Column | Description |
+A JSON array of employer objects, each with these fields (petition counts are
+numbers or `null` when unknown):
+
+| Field | Description |
 |---|---|
 | `company` | Employer name |
 | `careers_page` | Careers page URL |
@@ -48,7 +51,7 @@ Internal resume state used to continue an interrupted run without restarting fro
 
 #### `scraper.py`
 
-Main entry point. Orchestrates the full pipeline: downloads LCA files, parses cap-exempt employers, aggregates counts, looks up careers pages, and writes the sponsor CSV.
+Main entry point. Orchestrates the full pipeline: downloads LCA files, parses cap-exempt employers, aggregates counts, looks up careers pages, and writes the sponsor JSON.
 
 #### `dol_parser.py`
 
@@ -68,8 +71,9 @@ The following scripts exist in the codebase but are not yet integrated into the 
 
 #### Phase 2 — Job Scraping
 
-- **`IT_job.py`** — Scrapes IT job listings directly from employer careers pages and writes results to `it_jobs.csv`.
-- **`ats_scrapers.py`** — ATS-specific scrapers (Greenhouse, Lever, Workday, iCIMS, etc.) and a generic fallback, used by `IT_job.py` to handle a wide range of careers page formats.
+- **`IT_job.py`** — Scrapes devops/devsecops/aws job listings from employer careers pages and appends results to `it_jobs.jsonl` (one JSON object per line).
+- **`ats.py`** — Detects the ATS behind a careers page (Workday, Phenom/Radancy, iCIMS) and keyword-searches its API/results over plain HTTP, pulling structured location/country from each provider.
+- **`ats_scrapers.py`** — Generic landing-page fallback scraper, used by `IT_job.py` when no ATS adapter matches.
 - **`cron_jobs.py`** — Scheduler that chains the full pipeline end-to-end and runs it automatically on a recurring schedule.
 
 #### Phase 3 — UI

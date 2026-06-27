@@ -21,9 +21,8 @@ lca_data/
 *.xls
 *.csv
 h1b_cap_exempt_checkpoint.json
-it_jobs.csv
-h1b_cap_exempt_sponsors.csv
-h1b_cap_exempt_sponsors_cleaned.csv
+h1b_cap_exempt_sponsors.json
+h1b_cap_exempt_sponsors.*.bak.json
 it_jobs.jsonl
 ats_cache.json
 seen_job_urls.json

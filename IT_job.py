@@ -24,7 +24,7 @@ from playwright_stealth import Stealth
 
 import ats
 from config import (
-    COMPANIES_CSV, JOBS_JSONL, SEEN_URLS_FILE, ATS_CACHE,
+    COMPANIES_JSON, JOBS_JSONL, SEEN_URLS_FILE, ATS_CACHE,
     AGGREGATORS, POLITE_DELAY, JOB_KEYWORDS, now_pst, is_us_location,
 )
 from ats_scrapers import scrape_it_jobs
@@ -55,15 +55,13 @@ def save_seen_urls(urls: set[str]) -> None:
 
 
 def load_companies() -> list[dict]:
-    import csv
-    if not COMPANIES_CSV.exists():
-        sys.exit(f"Not found: {COMPANIES_CSV}\nRun scraper.py first.")
+    if not COMPANIES_JSON.exists():
+        sys.exit(f"Not found: {COMPANIES_JSON}\nRun scraper.py first.")
     companies = []
-    with open(COMPANIES_CSV, newline="", encoding="utf-8") as f:
-        for row in csv.DictReader(f):
-            url = row.get("careers_page", "").strip()
-            if url and not any(agg in url.lower() for agg in AGGREGATORS):
-                companies.append(row)
+    for row in json.loads(COMPANIES_JSON.read_text()):
+        url = (row.get("careers_page") or "").strip()
+        if url and not any(agg in url.lower() for agg in AGGREGATORS):
+            companies.append(row)
     return companies
 
 

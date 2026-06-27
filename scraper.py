@@ -5,7 +5,7 @@ Pipeline:
   1. Download DOL Excel files  → lca_data/
   2. Parse + aggregate         → top N cap-exempt employers
   3. Find careers pages        → via Google (Serper.dev API)
-  4. Write output              → h1b_cap_exempt_sponsors.csv
+  4. Write output              → h1b_cap_exempt_sponsors.json
 
 Requires: export SERPER_API_KEY=your_key_here
 """
@@ -13,35 +13,34 @@ Requires: export SERPER_API_KEY=your_key_here
 from __future__ import annotations
 
 import argparse
-import csv
 import json
 import shutil
 from datetime import datetime
 
 from config import (
-    DATA_DIR, COMPANIES_CSV, CHECKPOINT, DOL_FILES, TOP_N,
+    DATA_DIR, COMPANIES_JSON, CHECKPOINT, DOL_FILES, TOP_N,
     Company, normalize_name, polite_sleep, title_case,
 )
 from dol_parser import download_file, parse_year
 from careers_finder import find_careers_page
 
 
-def csv_has_data(path) -> bool:
-    """True if the CSV exists and has at least one non-empty data row."""
+def json_has_data(path) -> bool:
+    """True if the sponsors JSON exists and holds at least one company."""
     if not path.exists():
         return False
-    with open(path, newline="", encoding="utf-8") as f:
-        reader = csv.reader(f)
-        next(reader, None)  # skip header
-        return any(any(cell.strip() for cell in row) for row in reader)
+    try:
+        return bool(json.loads(path.read_text()))
+    except (json.JSONDecodeError, OSError):
+        return False
 
 
-def backup_csv() -> None:
-    """Copy the existing sponsors CSV next to itself before it gets overwritten."""
+def backup_json() -> None:
+    """Copy the existing sponsors JSON next to itself before it gets overwritten."""
     stamp = datetime.now().strftime("%Y%m%d_%H%M%S")
-    dest = COMPANIES_CSV.with_name(f"{COMPANIES_CSV.stem}.{stamp}.bak.csv")
-    shutil.copy2(COMPANIES_CSV, dest)
-    print(f"[backup] existing CSV saved → {dest.name}")
+    dest = COMPANIES_JSON.with_name(f"{COMPANIES_JSON.stem}.{stamp}.bak.json")
+    shutil.copy2(COMPANIES_JSON, dest)
+    print(f"[backup] existing JSON saved → {dest.name}")
 
 
 def load_checkpoint() -> dict:
@@ -58,12 +57,12 @@ def save_checkpoint(data: dict) -> None:
 
 
 def main(force: bool = False) -> None:
-    if csv_has_data(COMPANIES_CSV) and not force:
-        print(f"{COMPANIES_CSV.name} already exists and is non-empty — nothing to do.")
+    if json_has_data(COMPANIES_JSON) and not force:
+        print(f"{COMPANIES_JSON.name} already exists and is non-empty — nothing to do.")
         print("Re-run with --force to rebuild it (Excel files are reused, not re-downloaded).")
         return
-    if force and COMPANIES_CSV.exists():
-        backup_csv()
+    if force and COMPANIES_JSON.exists():
+        backup_json()
 
     DATA_DIR.mkdir(parents=True, exist_ok=True)
     state      = load_checkpoint()
@@ -122,24 +121,27 @@ def main(force: bool = False) -> None:
         save_checkpoint(state)
         polite_sleep()
 
-    # Phase 4 — Write CSV
-    with open(COMPANIES_CSV, "w", newline="", encoding="utf-8") as f:
-        writer = csv.writer(f)
-        writer.writerow(["company", "careers_page", "state",
-                         "h1b_2026", "h1b_2025", "h1b_2024"])
-        for c in top:
-            writer.writerow([c.name, c.careers_page, c.state,
-                             c.counts.get(2026, ""),
-                             c.counts.get(2025, ""),
-                             c.counts.get(2024, "")])
-    print(f"\nDone → {COMPANIES_CSV}")
+    # Phase 4 — Write JSON
+    records = [
+        {
+            "company": c.name,
+            "careers_page": c.careers_page,
+            "state": c.state,
+            "h1b_2026": c.counts.get(2026),
+            "h1b_2025": c.counts.get(2025),
+            "h1b_2024": c.counts.get(2024),
+        }
+        for c in top
+    ]
+    COMPANIES_JSON.write_text(json.dumps(records, ensure_ascii=False, indent=2))
+    print(f"\nDone → {COMPANIES_JSON}")
 
 
 if __name__ == "__main__":
     parser = argparse.ArgumentParser(description="Build H1B cap-exempt sponsor list.")
     parser.add_argument(
         "--force", action="store_true",
-        help="rebuild even if h1b_cap_exempt_sponsors.csv already exists "
+        help="rebuild even if h1b_cap_exempt_sponsors.json already exists "
              "(a timestamped backup is made first)",
     )
     args = parser.parse_args()
