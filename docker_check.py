@@ -20,13 +20,13 @@ print("MISSING from config:", missing or "none — all present")
 # 2) job-title filter
 should_pass = [
     "Senior DevOps Engineer", "DevSecOps Engineer",
-    "Cloud Infrastructure Engineer", "Infrastructure Engineer II",
-    "Network Infrastructure Architect",
+    "AWS Solutions Architect", "Cloud Engineer (AWS)",
 ]
 should_reject = [
     "Cybersecurity Analyst", "Site Reliability Engineer (SRE)",
-    "Securities Trading Associate", "Registered Nurse",
-    "Data Scientist", "Marketing Manager",
+    "Infrastructure Engineer II",        # "infrastructure" was intentionally dropped
+    "Paralegal — Employment Laws",       # word boundary: "laws" must not hit "aws"
+    "Registered Nurse", "Data Scientist", "Marketing Manager",
 ]
 ok = all(c.is_it_job(t) for t in should_pass) and not any(c.is_it_job(t) for t in should_reject)
 for t in should_pass:
