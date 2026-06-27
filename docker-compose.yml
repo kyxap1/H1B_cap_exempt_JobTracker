@@ -1,0 +1,23 @@
+# One image, one service. The default command runs the whole pipeline
+# (cron_jobs.py: build the sponsor list if needed, then scrape jobs).
+# Override `command` to run any single step:
+#
+#   docker compose run --rm app                              # full pipeline
+#   docker compose run --rm app python scraper.py --force    # rebuild sponsor list
+#   docker compose run --rm app python IT_job.py --limit 30  # scrape jobs (test: first 30)
+#   docker compose run --rm app python docker_check.py       # smoke test
+#
+# Code + .env stay on the host (mounted), never baked into the image. The
+# container runs as uid 1000 (set in the Dockerfile) so output files are owned by
+# the host user, not root. ./cache is mounted as the container HOME so browser /
+# fontconfig caches persist on disk instead of inside the container.
+services:
+  app:
+    build: .
+    image: h1b-tracker
+    working_dir: /app
+    env_file: .env
+    volumes:
+      - .:/app
+      - ./cache:/home/ubuntu
+    command: python cron_jobs.py
