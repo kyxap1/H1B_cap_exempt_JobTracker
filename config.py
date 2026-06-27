@@ -141,6 +141,16 @@ _US_STATE_CODES = frozenset(
 
 _US_SIGNALS = ("united states", "u.s.", "usa", "remote")
 
+# Full state names (ATSes often write "Rochester, Minnesota" with no 2-letter code).
+_US_STATE_NAMES = frozenset(
+    "alabama alaska arizona arkansas california colorado connecticut delaware "
+    "florida georgia hawaii idaho illinois indiana iowa kansas kentucky louisiana "
+    "maine maryland massachusetts michigan minnesota mississippi missouri montana "
+    "nebraska nevada hampshire jersey mexico york carolina dakota ohio oklahoma "
+    "oregon pennsylvania rhode tennessee texas utah vermont virginia washington "
+    "wisconsin wyoming columbia".split()
+)
+
 
 def is_us_location(location: str) -> bool:
     """True for US (or empty/unknown) locations; False for clearly non-US ones."""
@@ -148,6 +158,9 @@ def is_us_location(location: str) -> bool:
         return True  # unknown location — keep rather than drop
     low = location.lower()
     if any(sig in low for sig in _US_SIGNALS):
+        return True
+    words = set(re.split(r"[^a-z]+", low))
+    if words & _US_STATE_NAMES:
         return True
     tokens = re.split(r"[,\s/]+", location.upper())
     return any(tok in _US_STATE_CODES for tok in tokens)
