@@ -42,6 +42,9 @@ def detect(html: str, final_url: str = "") -> dict | None:
     ep = _detect_phenom(html, final_url)
     if ep:
         return {"ats": "phenom", "endpoint": ep}
+    ep = _detect_icims(html, final_url)
+    if ep:
+        return {"ats": "icims", "endpoint": ep}
     return None
 
 
@@ -70,6 +73,20 @@ def _detect_phenom(html: str, final_url: str) -> str | None:
     return f"{base}?orgIds={m.group(1)}" if m else base
 
 
+# iCIMS classic: a branded careers domain proxies <tenant>.icims.com; the search
+# results render inside an iframe (...&in_iframe=1) where each job row carries its
+# title, location, posted date, and position type as labeled fields.
+_ICIMS_LINK = re.compile(r"https://([a-z0-9][a-z0-9-]*)\.icims\.com", re.IGNORECASE)
+
+
+def _detect_icims(html: str, final_url: str) -> str | None:
+    m = _ICIMS_LINK.search(final_url) or _ICIMS_LINK.search(html)
+    if not m:
+        return None
+    tenant = m.group(1)
+    return f"https://{tenant}.icims.com/jobs/search"
+
+
 # ---------------------------------------------------------------------------
 # Search adapters
 # ---------------------------------------------------------------------------
@@ -81,6 +98,8 @@ def search(ats: str, endpoint: str, keyword: str, limit: int = 20) -> list[dict]
         return _search_workday(endpoint, keyword, limit)
     if ats == "phenom":
         return _search_phenom(endpoint, keyword, limit)
+    if ats == "icims":
+        return _search_icims(endpoint, keyword, limit)
     raise ValueError(f"no search adapter for ats={ats!r}")
 
 
@@ -185,6 +204,79 @@ def _enrich_phenom(job: dict) -> None:
     etype = jp.get("employmentType")
     if etype:
         job["time_type"] = etype if isinstance(etype, str) else ", ".join(etype)
+
+
+_ICIMS_JOB = re.compile(r"/jobs/\d+/.+/job\b", re.IGNORECASE)
+
+
+def _search_icims(endpoint: str, keyword: str, limit: int) -> list[dict]:
+    host = endpoint.split("/jobs/search")[0]  # https://<tenant>.icims.com
+    url = (f"{endpoint}?ss=1&searchKeyword={quote(keyword)}"
+           f"&searchRelation=keyword_all&in_iframe=1")
+    r = cf.get(url, impersonate="chrome", timeout=30)
+    r.raise_for_status()
+    soup = BeautifulSoup(r.text, "html.parser")
+    jobs, seen = [], set()
+    for a in soup.select("a[href]"):
+        href = a.get("href", "")
+        if not _ICIMS_JOB.search(href):
+            continue
+        job_url = href.split("?")[0]
+        if job_url.startswith("/"):
+            job_url = host + job_url
+        if job_url in seen:
+            continue
+        seen.add(job_url)
+        row = a.find_parent("div", class_="row") or a.parent
+        title = (_icims_field(row, "Requisition Title")
+                 or _icims_field(row, "Title")
+                 or re.sub(r"^(Requisition Title|Title)\s+", "",
+                           a.get_text(" ", strip=True)))
+        raw_loc = _icims_field(row, "Job Locations") or _icims_field(row, "Job Location")
+        location, country = _icims_location(raw_loc)
+        m = re.search(r"Position Type\s+([A-Za-z/ \-]+?)\s+(?:Department|Position Category|Requisition|FTE|HR Mission|$)",
+                      row.get_text(" ", strip=True) if row else "")
+        jobs.append({
+            "title": title.strip(),
+            "url": job_url,
+            "location": location,
+            "country": country,
+            "time_type": m.group(1).strip() if m else "",
+            "posted": _icims_field(row, "Posted Date"),
+        })
+        if len(jobs) >= limit:
+            break
+    return jobs
+
+
+def _icims_field(row, label: str) -> str:
+    """Read an iCIMS list field by its screen-reader label (e.g. "Job Locations").
+    The label sits in a <span class="field-label"> whose parent holds the value."""
+    if row is None:
+        return ""
+    for sp in row.select("span.field-label"):
+        if sp.get_text(strip=True).rstrip(":").lower() == label.lower():
+            val = sp.parent.get_text(" ", strip=True)
+            return val.replace(sp.get_text(" ", strip=True), "", 1).strip()
+    return ""
+
+
+def _icims_location(raw: str) -> tuple[str, str]:
+    """iCIMS encodes location as COUNTRY-STATE-CITY (e.g. "US-OR-Portland"),
+    so the country code is the structured first segment. Returns (pretty, country)."""
+    raw = (raw or "").strip()
+    if not raw:
+        return "", ""
+    first = re.split(r"\s*\|\s*|\s{2,}|\n", raw)[0].strip()
+    parts = [p.strip() for p in first.split("-") if p.strip()]
+    country = parts[0] if parts else ""
+    if len(parts) >= 3:
+        pretty = f"{parts[2]}, {parts[1]}"
+    elif len(parts) == 2:
+        pretty = parts[1]
+    else:
+        pretty = first
+    return pretty, country
 
 
 def _ldjson_jobposting(html: str) -> dict | None:
