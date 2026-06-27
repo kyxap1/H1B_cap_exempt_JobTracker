@@ -8,7 +8,7 @@ from zoneinfo import ZoneInfo
 
 PROJECT_DIR = Path(__file__).parent
 PYTHON = sys.executable
-SCRAPPER = PROJECT_DIR / "scrapper.py"
+SCRAPPER = PROJECT_DIR / "scraper.py"
 JOB_SCRAPER = PROJECT_DIR / "IT_job.py"
 COMPANIES_CSV = PROJECT_DIR / "h1b_cap_exempt_sponsors.csv"
 JOBS_CSV = PROJECT_DIR / "it_jobs.csv"
@@ -33,9 +33,9 @@ def companies_need_scraping() -> bool:
     return missing / len(rows) > 0.8
 
 
-def run(script: Path, label: str) -> bool:
+def run(script: Path, label: str, extra_args: list[str] | None = None) -> bool:
     log(f"Starting {label} ...")
-    result = subprocess.run([PYTHON, str(script)], cwd=PROJECT_DIR)
+    result = subprocess.run([PYTHON, str(script), *(extra_args or [])], cwd=PROJECT_DIR)
     if result.returncode == 0:
         log(f"{label} completed successfully.")
         return True
@@ -49,9 +49,9 @@ def main() -> None:
 
     # Step 1: Build company + careers page list if needed
     if companies_need_scraping():
-        log("Companies CSV missing or careers pages not filled — running scrapper.py")
-        if not run(SCRAPPER, "scrapper.py"):
-            log("scrapper.py failed. Aborting pipeline.")
+        log("Companies CSV missing or careers pages not filled — running scraper.py --force")
+        if not run(SCRAPPER, "scraper.py", ["--force"]):
+            log("scraper.py failed. Aborting pipeline.")
             sys.exit(1)
     else:
         with open(COMPANIES_CSV, newline="", encoding="utf-8") as f:
