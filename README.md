@@ -12,7 +12,7 @@ H1B cap-exempt employers — primarily universities, nonprofit research institut
 2. Parses and filters employers based on cap-exempt NAICS codes and name keywords
 3. Aggregates H1B petition counts by year and ranks the top sponsors
 4. Looks up each employer's careers page via Google Search (Serper.dev API)
-5. Writes the final employer list to `h1b_cap_exempt_sponsors.json`
+5. Writes the final employer list to `h1b-cap-exempt-sponsors.json`
 
 ## Pipeline
 
@@ -27,7 +27,7 @@ flowchart TD
 
 ## Output
 
-### `h1b_cap_exempt_sponsors.json`
+### `h1b-cap-exempt-sponsors.json`
 
 A JSON array of employer objects, each with these fields (petition counts are
 numbers or `null` when unknown):
@@ -41,7 +41,7 @@ numbers or `null` when unknown):
 | `h1b_2025` | H1B petition count, FY2025 |
 | `h1b_2026` | H1B petition count, FY2026 |
 
-### `h1b_cap_exempt_checkpoint.json`
+### `h1b-cap-exempt-checkpoint.json`
 
 Internal resume state used to continue an interrupted run without restarting from scratch.
 
@@ -49,7 +49,7 @@ Internal resume state used to continue an interrupted run without restarting fro
 
 ### Active
 
-#### `scraper.py`
+#### `sponsors.py`
 
 Main entry point. Orchestrates the full pipeline: downloads LCA files, parses cap-exempt employers, aggregates counts, looks up careers pages, and writes the sponsor JSON.
 
@@ -71,9 +71,9 @@ The following scripts exist in the codebase but are not yet integrated into the 
 
 #### Phase 2 — Job Scraping
 
-- **`IT_job.py`** — Scrapes devops/devsecops/aws job listings from employer careers pages and appends results to `it_jobs.jsonl` (one JSON object per line).
+- **`jobs.py`** — Scrapes devops/devsecops/aws job listings from employer careers pages and appends results to `it-jobs.jsonl` (one JSON object per line).
 - **`ats.py`** — Detects the ATS behind a careers page (Workday, Phenom/Radancy, iCIMS) and keyword-searches its API/results over plain HTTP, pulling structured location/country from each provider.
-- **`ats_scrapers.py`** — Generic landing-page fallback scraper, used by `IT_job.py` when no ATS adapter matches.
+- **`ats_scrapers.py`** — Generic landing-page fallback scraper, used by `jobs.py` when no ATS adapter matches.
 - **`cron_jobs.py`** — Scheduler that chains the full pipeline end-to-end and runs it automatically on a recurring schedule.
 
 #### Phase 3 — UI
@@ -106,7 +106,7 @@ export SERPER_API_KEY=your_key_here
 ### Run
 
 ```bash
-python3 scraper.py
+python3 sponsors.py
 ```
 
 ## Caveats

@@ -7,7 +7,7 @@ import config as c
 
 # 1) every config name imported by the other modules must exist
 need = {}
-for f in ["IT_job.py", "ats_scrapers.py", "scraper.py",
+for f in ["jobs.py", "ats_scrapers.py", "sponsors.py",
           "careers_finder.py", "dol_parser.py", "cron_jobs.py"]:
     for n in ast.walk(ast.parse(open(f).read())):
         if isinstance(n, ast.ImportFrom) and n.module == "config":

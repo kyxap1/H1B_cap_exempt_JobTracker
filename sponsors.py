@@ -5,7 +5,7 @@ Pipeline:
   1. Download DOL Excel files  → lca_data/
   2. Parse + aggregate         → top N cap-exempt employers
   3. Find careers pages        → via Google (Serper.dev API)
-  4. Write output              → h1b_cap_exempt_sponsors.json
+  4. Write output              → h1b-cap-exempt-sponsors.json
 
 Requires: export SERPER_API_KEY=your_key_here
 """
@@ -141,7 +141,7 @@ if __name__ == "__main__":
     parser = argparse.ArgumentParser(description="Build H1B cap-exempt sponsor list.")
     parser.add_argument(
         "--force", action="store_true",
-        help="rebuild even if h1b_cap_exempt_sponsors.json already exists "
+        help="rebuild even if h1b-cap-exempt-sponsors.json already exists "
              "(a timestamped backup is made first)",
     )
     args = parser.parse_args()

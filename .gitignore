@@ -20,12 +20,12 @@ lca_data/
 *.xlsx
 *.xls
 *.csv
-h1b_cap_exempt_checkpoint.json
-h1b_cap_exempt_sponsors.json
-h1b_cap_exempt_sponsors.*.bak.json
-it_jobs.jsonl
-ats_cache.json
-seen_job_urls.json
+h1b-cap-exempt-checkpoint.json
+h1b-cap-exempt-sponsors.json
+h1b-cap-exempt-sponsors.*.bak.json
+it-jobs.jsonl
+ats-cache.json
+seen-job-urls.json
 
 # Local config files
 *.local

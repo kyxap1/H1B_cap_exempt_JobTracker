@@ -3,11 +3,11 @@ Scrape devops / devsecops / aws jobs from H1B cap-exempt employer careers pages.
 
 For each company:
   1. Detect the ATS once (render the careers page, fingerprint it) and cache the
-     resolved search endpoint in ats_cache.json — subsequent runs skip the browser.
+     resolved search endpoint in ats-cache.json — subsequent runs skip the browser.
   2. If the ATS is known (e.g. Workday), keyword-search its API over plain HTTP.
   3. Otherwise fall back to scraping the careers landing page.
 
-New jobs are appended to it_jobs.jsonl (one JSON object per line) as they are
+New jobs are appended to it-jobs.jsonl (one JSON object per line) as they are
 found, so an interrupted run keeps its progress.
 """
 
@@ -56,7 +56,7 @@ def save_seen_urls(urls: set[str]) -> None:
 
 def load_companies() -> list[dict]:
     if not COMPANIES_JSON.exists():
-        sys.exit(f"Not found: {COMPANIES_JSON}\nRun scraper.py first.")
+        sys.exit(f"Not found: {COMPANIES_JSON}\nRun sponsors.py first.")
     companies = []
     for row in json.loads(COMPANIES_JSON.read_text()):
         url = (row.get("careers_page") or "").strip()

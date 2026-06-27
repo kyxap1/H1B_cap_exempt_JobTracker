@@ -3,8 +3,8 @@
 # Override `command` to run any single step:
 #
 #   docker compose run --rm app                              # full pipeline
-#   docker compose run --rm app python scraper.py --force    # rebuild sponsor list
-#   docker compose run --rm app python IT_job.py --limit 30  # scrape jobs (test: first 30)
+#   docker compose run --rm app python sponsors.py --force   # rebuild sponsor list
+#   docker compose run --rm app python jobs.py --limit 30     # scrape jobs (test: first 30)
 #   docker compose run --rm app python docker_check.py       # smoke test
 #
 # Code + .env stay on the host (mounted), never baked into the image. The

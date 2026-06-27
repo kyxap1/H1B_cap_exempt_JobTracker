@@ -16,11 +16,11 @@ from zoneinfo import ZoneInfo
 
 PROJECT_DIR    = Path(__file__).parent
 DATA_DIR       = PROJECT_DIR / "lca_data"
-COMPANIES_JSON = PROJECT_DIR / "h1b_cap_exempt_sponsors.json"
-CHECKPOINT     = PROJECT_DIR / "h1b_cap_exempt_checkpoint.json"
-JOBS_JSONL     = PROJECT_DIR / "it_jobs.jsonl"
-SEEN_URLS_FILE = PROJECT_DIR / "seen_job_urls.json"
-ATS_CACHE      = PROJECT_DIR / "ats_cache.json"
+COMPANIES_JSON = PROJECT_DIR / "h1b-cap-exempt-sponsors.json"
+CHECKPOINT     = PROJECT_DIR / "h1b-cap-exempt-checkpoint.json"
+JOBS_JSONL     = PROJECT_DIR / "it-jobs.jsonl"
+SEEN_URLS_FILE = PROJECT_DIR / "seen-job-urls.json"
+ATS_CACHE      = PROJECT_DIR / "ats-cache.json"
 
 # ---------------------------------------------------------------------------
 # Pipeline settings
@@ -55,7 +55,7 @@ AGGREGATOR_BLOCKLIST = (
     "google.com", "youtube.com", "facebook.com", "twitter.com",
 )
 
-# IT_job.py / ats_scrapers.py import this name; it's the same blocklist.
+# jobs.py / ats_scrapers.py import this name; it's the same blocklist.
 AGGREGATORS = AGGREGATOR_BLOCKLIST
 
 # ---------------------------------------------------------------------------

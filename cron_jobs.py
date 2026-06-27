@@ -8,10 +8,10 @@ from zoneinfo import ZoneInfo
 
 PROJECT_DIR = Path(__file__).parent
 PYTHON = sys.executable
-SCRAPPER = PROJECT_DIR / "scraper.py"
-JOB_SCRAPER = PROJECT_DIR / "IT_job.py"
-COMPANIES_JSON = PROJECT_DIR / "h1b_cap_exempt_sponsors.json"
-JOBS_JSONL = PROJECT_DIR / "it_jobs.jsonl"
+SPONSORS = PROJECT_DIR / "sponsors.py"
+JOBS = PROJECT_DIR / "jobs.py"
+COMPANIES_JSON = PROJECT_DIR / "h1b-cap-exempt-sponsors.json"
+JOBS_JSONL = PROJECT_DIR / "it-jobs.jsonl"
 PST = ZoneInfo("America/Los_Angeles")
 
 
@@ -21,7 +21,7 @@ def log(msg: str) -> None:
 
 
 def companies_need_scraping() -> bool:
-    """Return True if scraper.py needs to run."""
+    """Return True if sponsors.py needs to run."""
     if not COMPANIES_JSON.exists():
         return True
     try:
@@ -51,16 +51,16 @@ def main() -> None:
 
     # Step 1: Build company + careers page list if needed
     if companies_need_scraping():
-        log("Companies JSON missing or careers pages not filled — running scraper.py --force")
-        if not run(SCRAPPER, "scraper.py", ["--force"]):
-            log("scraper.py failed. Aborting pipeline.")
+        log("Companies JSON missing or careers pages not filled — running sponsors.py --force")
+        if not run(SPONSORS, "sponsors.py", ["--force"]):
+            log("sponsors.py failed. Aborting pipeline.")
             sys.exit(1)
     else:
         total = len(json.loads(COMPANIES_JSON.read_text()))
-        log(f"Companies JSON already populated ({total} companies). Skipping scraper.py.")
+        log(f"Companies JSON already populated ({total} companies). Skipping sponsors.py.")
 
     # Step 2: Scrape new IT jobs from careers pages
-    run(JOB_SCRAPER, "job_scraper.py")
+    run(JOBS, "jobs.py")
 
     # Summary
     if JOBS_JSONL.exists():
