@@ -12,8 +12,11 @@ Requires: export SERPER_API_KEY=your_key_here
 
 from __future__ import annotations
 
+import argparse
 import csv
 import json
+import shutil
+from datetime import datetime
 
 from config import (
     DATA_DIR, COMPANIES_CSV, CHECKPOINT, DOL_FILES, TOP_N,
@@ -21,6 +24,24 @@ from config import (
 )
 from dol_parser import download_file, parse_year
 from careers_finder import find_careers_page
+
+
+def csv_has_data(path) -> bool:
+    """True if the CSV exists and has at least one non-empty data row."""
+    if not path.exists():
+        return False
+    with open(path, newline="", encoding="utf-8") as f:
+        reader = csv.reader(f)
+        next(reader, None)  # skip header
+        return any(any(cell.strip() for cell in row) for row in reader)
+
+
+def backup_csv() -> None:
+    """Copy the existing sponsors CSV next to itself before it gets overwritten."""
+    stamp = datetime.now().strftime("%Y%m%d_%H%M%S")
+    dest = COMPANIES_CSV.with_name(f"{COMPANIES_CSV.stem}.{stamp}.bak.csv")
+    shutil.copy2(COMPANIES_CSV, dest)
+    print(f"[backup] existing CSV saved → {dest.name}")
 
 
 def load_checkpoint() -> dict:
@@ -36,7 +57,14 @@ def save_checkpoint(data: dict) -> None:
     CHECKPOINT.write_text(json.dumps(data, indent=2))
 
 
-def main() -> None:
+def main(force: bool = False) -> None:
+    if csv_has_data(COMPANIES_CSV) and not force:
+        print(f"{COMPANIES_CSV.name} already exists and is non-empty — nothing to do.")
+        print("Re-run with --force to rebuild it (Excel files are reused, not re-downloaded).")
+        return
+    if force and COMPANIES_CSV.exists():
+        backup_csv()
+
     DATA_DIR.mkdir(parents=True, exist_ok=True)
     state      = load_checkpoint()
     list_data  = state.get("list_data", {})
@@ -108,7 +136,14 @@ def main() -> None:
 
 
 if __name__ == "__main__":
+    parser = argparse.ArgumentParser(description="Build H1B cap-exempt sponsor list.")
+    parser.add_argument(
+        "--force", action="store_true",
+        help="rebuild even if h1b_cap_exempt_sponsors.csv already exists "
+             "(a timestamped backup is made first)",
+    )
+    args = parser.parse_args()
     try:
-        main()
+        main(force=args.force)
     except KeyboardInterrupt:
         print("\nInterrupted. Progress saved; re-run to resume.")
