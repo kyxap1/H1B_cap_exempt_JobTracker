@@ -19,7 +19,9 @@ DATA_DIR       = PROJECT_DIR / "lca_data"
 COMPANIES_CSV  = PROJECT_DIR / "h1b_cap_exempt_sponsors.csv"
 CHECKPOINT     = PROJECT_DIR / "h1b_cap_exempt_checkpoint.json"
 JOBS_CSV       = PROJECT_DIR / "it_jobs.csv"
+JOBS_JSONL     = PROJECT_DIR / "it_jobs.jsonl"
 SEEN_URLS_FILE = PROJECT_DIR / "seen_job_urls.json"
+ATS_CACHE      = PROJECT_DIR / "ats_cache.json"
 
 # ---------------------------------------------------------------------------
 # Pipeline settings
