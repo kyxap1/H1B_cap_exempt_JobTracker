@@ -113,9 +113,9 @@ def jobs_via_fallback(page, careers_url: str) -> list[dict]:
 def is_us_job(job: dict) -> bool:
     """Prefer the ATS's structured country field; fall back to the location
     string heuristic only when no country is available (e.g. fallback scrape)."""
-    country = (job.get("country") or "").lower()
+    country = (job.get("country") or "").strip().lower()
     if country:
-        return "united states" in country
+        return country in ("us", "usa", "u.s.") or "united states" in country
     return is_us_location(job.get("location", ""))
 
 

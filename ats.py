@@ -11,6 +11,7 @@ Playwright page); the search itself is plain HTTP via curl_cffi.
 
 from __future__ import annotations
 
+import json
 import re
 from urllib.parse import quote, urljoin, urlparse
 
@@ -151,4 +152,49 @@ def _search_phenom(endpoint: str, keyword: str, limit: int) -> list[dict]:
             })
         if len(jobs) >= limit:
             break
+    # Enrich each hit with structured data from its job page (schema.org JSON-LD).
+    for job in jobs:
+        _enrich_phenom(job)
     return jobs
+
+
+def _enrich_phenom(job: dict) -> None:
+    """Pull structured country / location / employmentType from the job page's
+    schema.org JobPosting JSON-LD."""
+    try:
+        html = cf.get(job["url"], impersonate="chrome", timeout=30).text
+    except Exception:
+        return
+    jp = _ldjson_jobposting(html)
+    if not jp:
+        return
+    loc = jp.get("jobLocation")
+    if isinstance(loc, list):
+        loc = loc[0] if loc else None
+    addr = (loc or {}).get("address", {}) if isinstance(loc, dict) else {}
+    country = addr.get("addressCountry", "")
+    if isinstance(country, dict):
+        country = country.get("name", "")
+    locality = addr.get("addressLocality", "")
+    region = addr.get("addressRegion", "")
+    if country:
+        job["country"] = country
+    pretty = ", ".join(x for x in (locality, region) if x)
+    if pretty:
+        job["location"] = pretty
+    etype = jp.get("employmentType")
+    if etype:
+        job["time_type"] = etype if isinstance(etype, str) else ", ".join(etype)
+
+
+def _ldjson_jobposting(html: str) -> dict | None:
+    soup = BeautifulSoup(html, "html.parser")
+    for s in soup.find_all("script", type="application/ld+json"):
+        try:
+            data = json.loads(s.string or "")
+        except Exception:
+            continue
+        for item in (data if isinstance(data, list) else [data]):
+            if isinstance(item, dict) and item.get("@type") == "JobPosting":
+                return item
+    return None
