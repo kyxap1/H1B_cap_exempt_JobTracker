@@ -9,6 +9,7 @@ Scheduled via cron_jobs.py to run at 6 AM and 3 PM PST.
 
 from __future__ import annotations
 
+import argparse
 import csv
 import json
 import sys
@@ -58,13 +59,16 @@ def load_companies() -> list[dict]:
 # Main
 # ---------------------------------------------------------------------------
 
-def main() -> None:
+def main(limit: int | None = None) -> None:
     companies  = load_companies()
+    if limit:
+        companies = companies[:limit]
     seen_urls  = load_seen_urls()
     scraped_at = now_pst()
 
     print(f"\n=== IT Job Scraper  {scraped_at} ===")
-    print(f"Companies with careers pages: {len(companies)}")
+    print(f"Companies with careers pages: {len(companies)}"
+          + (f" (limited to first {limit})" if limit else ""))
 
     new_jobs: list[dict] = []
 
@@ -128,4 +132,10 @@ def main() -> None:
 
 
 if __name__ == "__main__":
-    main()
+    parser = argparse.ArgumentParser(description="Scrape IT jobs from careers pages.")
+    parser.add_argument(
+        "--limit", type=int, default=None,
+        help="only process the first N companies (for a quick test run)",
+    )
+    args = parser.parse_args()
+    main(limit=args.limit)
