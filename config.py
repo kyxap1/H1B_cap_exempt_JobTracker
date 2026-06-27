@@ -71,11 +71,17 @@ ATS_DOMAINS = (
 # Job-title filter  ──  EDIT THIS to change which roles you track
 # ---------------------------------------------------------------------------
 
-# Matched as case-insensitive substrings of the job title.
+# Keywords passed to ATS search and matched (on word boundaries) against job
+# titles in the fallback scraper. "aws" is used instead of "infrastructure"
+# because the latter is noisy on non-tech employers (plumbers, facilities).
 JOB_KEYWORDS = (
     "devops",
     "devsecops",
-    "infrastructure",
+    "aws",
+)
+
+_JOB_RE = re.compile(
+    r"\b(" + "|".join(re.escape(k) for k in JOB_KEYWORDS) + r")\b", re.IGNORECASE
 )
 
 # ---------------------------------------------------------------------------
@@ -117,11 +123,12 @@ def now_pst() -> str:
 
 
 def is_it_job(title: str) -> bool:
-    """True if a job title matches one of the roles we track (see JOB_KEYWORDS)."""
+    """True if a job title matches one of the roles we track (see JOB_KEYWORDS).
+
+    Word-boundary match so "aws" does not hit "laws"/"draws" etc."""
     if not title:
         return False
-    low = title.lower()
-    return any(kw in low for kw in JOB_KEYWORDS)
+    return bool(_JOB_RE.search(title))
 
 
 _US_STATE_CODES = frozenset(
