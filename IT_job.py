@@ -176,6 +176,7 @@ def main(limit: int | None = None) -> None:
                     "title": j["title"],
                     "url": j["url"],
                     "location": j.get("location", ""),
+                    "time_type": j.get("time_type", ""),
                     "posted": j.get("posted", j.get("date_posted", "")),
                     "scraped_at_pst": scraped_at,
                 }
