@@ -4,15 +4,12 @@ import subprocess
 import sys
 from datetime import datetime
 from pathlib import Path
-from zoneinfo import ZoneInfo
 
-PROJECT_DIR = Path(__file__).parent
+from config import PROJECT_DIR, COMPANIES_JSON, JOBS_JSONL, PST
+
 PYTHON = sys.executable
 SPONSORS = PROJECT_DIR / "sponsors.py"
 JOBS = PROJECT_DIR / "jobs.py"
-COMPANIES_JSON = PROJECT_DIR / "h1b-cap-exempt-sponsors.json"
-JOBS_JSONL = PROJECT_DIR / "it-jobs.jsonl"
-PST = ZoneInfo("America/Los_Angeles")
 
 
 def log(msg: str) -> None:

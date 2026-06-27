@@ -15,17 +15,8 @@ __pycache__/
 # Playwright browser and temp data
 playwright-report/
 
-# Data output files
-lca_data/
-*.xlsx
-*.xls
-*.csv
-h1b-cap-exempt-checkpoint.json
-h1b-cap-exempt-sponsors.json
-h1b-cap-exempt-sponsors.*.bak.json
-it-jobs.jsonl
-ats-cache.json
-seen-job-urls.json
+# Pipeline outputs & downloads (DOL Excel, sponsor list, jobs, checkpoint, state)
+data/
 
 # Local config files
 *.local
@@ -41,5 +32,6 @@ seen-job-urls.json
 # Local backups
 backups/
 
-# Persisted container HOME (browser/fontconfig cache)
+# Regenerable caches: ATS detection cache + persisted container HOME
+# (browser/fontconfig cache)
 cache/

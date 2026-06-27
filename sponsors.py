@@ -2,10 +2,10 @@
 Build H1B cap-exempt sponsor list from DOL OFLC LCA data.
 
 Pipeline:
-  1. Download DOL Excel files  → lca_data/
+  1. Download DOL Excel files  → data/lca/
   2. Parse + aggregate         → top N cap-exempt employers
   3. Find careers pages        → via Google (Serper.dev API)
-  4. Write output              → h1b-cap-exempt-sponsors.json
+  4. Write output              → data/h1b-cap-exempt-sponsors.json
 
 Requires: export SERPER_API_KEY=your_key_here
 """
@@ -18,7 +18,7 @@ import shutil
 from datetime import datetime
 
 from config import (
-    DATA_DIR, COMPANIES_JSON, CHECKPOINT, DOL_FILES, TOP_N,
+    LCA_DIR, COMPANIES_JSON, CHECKPOINT, DOL_FILES, TOP_N,
     Company, normalize_name, polite_sleep, title_case,
 )
 from dol_parser import download_file, parse_year
@@ -64,7 +64,6 @@ def main(force: bool = False) -> None:
     if force and COMPANIES_JSON.exists():
         backup_json()
 
-    DATA_DIR.mkdir(parents=True, exist_ok=True)
     state      = load_checkpoint()
     list_data  = state.get("list_data", {})
     enrichment = state.get("enrichment", {})
@@ -72,7 +71,7 @@ def main(force: bool = False) -> None:
     # Phase 1 — Download
     print("\n=== Phase 1: Downloading DOL LCA data ===")
     for url in DOL_FILES.values():
-        download_file(url, DATA_DIR / url.split("/")[-1])
+        download_file(url, LCA_DIR / url.split("/")[-1])
 
     # Phase 2 — Parse + merge years
     print("\n=== Phase 2: Parsing LCA data ===")
@@ -83,7 +82,7 @@ def main(force: bool = False) -> None:
             print(f"[checkpoint] {year}: {len(list_data[key])} employers")
             year_data = list_data[key]
         else:
-            year_data = parse_year(DATA_DIR / url.split("/")[-1], year)
+            year_data = parse_year(LCA_DIR / url.split("/")[-1], year)
             list_data[key] = year_data
             state["list_data"] = list_data
             save_checkpoint(state)

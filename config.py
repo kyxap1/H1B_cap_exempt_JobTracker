@@ -12,15 +12,28 @@ from zoneinfo import ZoneInfo
 
 # ---------------------------------------------------------------------------
 # Paths
+#
+# Everything the pipeline produces lives under two top-level dirs (both
+# gitignored) so the repo root stays clean:
+#   data/   — outputs worth keeping (DOL downloads, sponsor list, jobs, state)
+#   cache/  — regenerable caches (ATS detection cache; also the container HOME)
 # ---------------------------------------------------------------------------
 
 PROJECT_DIR    = Path(__file__).parent
-DATA_DIR       = PROJECT_DIR / "lca_data"
-COMPANIES_JSON = PROJECT_DIR / "h1b-cap-exempt-sponsors.json"
-CHECKPOINT     = PROJECT_DIR / "h1b-cap-exempt-checkpoint.json"
-JOBS_JSONL     = PROJECT_DIR / "it-jobs.jsonl"
-SEEN_URLS_FILE = PROJECT_DIR / "seen-job-urls.json"
-ATS_CACHE      = PROJECT_DIR / "ats-cache.json"
+DATA_DIR       = PROJECT_DIR / "data"
+CACHE_DIR      = PROJECT_DIR / "cache"
+
+LCA_DIR        = DATA_DIR / "lca"                              # DOL Excel downloads
+COMPANIES_JSON = DATA_DIR / "h1b-cap-exempt-sponsors.json"
+CHECKPOINT     = DATA_DIR / "h1b-cap-exempt-checkpoint.json"
+JOBS_JSONL     = DATA_DIR / "it-jobs.jsonl"
+SEEN_URLS_FILE = DATA_DIR / "seen-job-urls.json"
+ATS_CACHE      = CACHE_DIR / "ats-cache.json"
+
+# Create the dirs on import so every entry point (sponsors / jobs / cron) can
+# write its outputs without each one repeating mkdir calls.
+for _d in (DATA_DIR, CACHE_DIR, LCA_DIR):
+    _d.mkdir(parents=True, exist_ok=True)
 
 # ---------------------------------------------------------------------------
 # Pipeline settings

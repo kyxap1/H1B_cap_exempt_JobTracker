@@ -12,7 +12,11 @@ H1B cap-exempt employers — primarily universities, nonprofit research institut
 2. Parses and filters employers based on cap-exempt NAICS codes and name keywords
 3. Aggregates H1B petition counts by year and ranks the top sponsors
 4. Looks up each employer's careers page via Google Search (Serper.dev API)
-5. Writes the final employer list to `h1b-cap-exempt-sponsors.json`
+5. Writes the final employer list to `data/h1b-cap-exempt-sponsors.json`
+
+All generated files live under two gitignored top-level dirs: `data/` (DOL
+downloads in `data/lca/`, the sponsor list, jobs, checkpoint and dedup state)
+and `cache/` (the ATS detection cache plus the persisted container HOME).
 
 ## Pipeline
 
@@ -27,7 +31,7 @@ flowchart TD
 
 ## Output
 
-### `h1b-cap-exempt-sponsors.json`
+### `data/h1b-cap-exempt-sponsors.json`
 
 A JSON array of employer objects, each with these fields (petition counts are
 numbers or `null` when unknown):
@@ -41,7 +45,7 @@ numbers or `null` when unknown):
 | `h1b_2025` | H1B petition count, FY2025 |
 | `h1b_2026` | H1B petition count, FY2026 |
 
-### `h1b-cap-exempt-checkpoint.json`
+### `data/h1b-cap-exempt-checkpoint.json`
 
 Internal resume state used to continue an interrupted run without restarting from scratch.
 
@@ -71,7 +75,7 @@ The following scripts exist in the codebase but are not yet integrated into the 
 
 #### Phase 2 — Job Scraping
 
-- **`jobs.py`** — Scrapes devops/devsecops/aws job listings from employer careers pages and appends results to `it-jobs.jsonl` (one JSON object per line).
+- **`jobs.py`** — Scrapes devops/devsecops/aws job listings from employer careers pages and appends results to `data/it-jobs.jsonl` (one JSON object per line).
 - **`ats.py`** — Detects the ATS behind a careers page (Workday, Phenom/Radancy, iCIMS) and keyword-searches its API/results over plain HTTP, pulling structured location/country from each provider.
 - **`ats_scrapers.py`** — Generic landing-page fallback scraper, used by `jobs.py` when no ATS adapter matches.
 - **`cron_jobs.py`** — Scheduler that chains the full pipeline end-to-end and runs it automatically on a recurring schedule.

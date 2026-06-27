@@ -3,11 +3,11 @@ Scrape devops / devsecops / aws jobs from H1B cap-exempt employer careers pages.
 
 For each company:
   1. Detect the ATS once (render the careers page, fingerprint it) and cache the
-     resolved search endpoint in ats-cache.json — subsequent runs skip the browser.
+     resolved search endpoint in cache/ats-cache.json — subsequent runs skip the browser.
   2. If the ATS is known (e.g. Workday), keyword-search its API over plain HTTP.
   3. Otherwise fall back to scraping the careers landing page.
 
-New jobs are appended to it-jobs.jsonl (one JSON object per line) as they are
+New jobs are appended to data/it-jobs.jsonl (one JSON object per line) as they are
 found, so an interrupted run keeps its progress.
 """
 
