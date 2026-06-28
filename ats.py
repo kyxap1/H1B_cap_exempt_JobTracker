@@ -115,6 +115,22 @@ def detect(html: str, final_url: str = "") -> dict | None:
     ep = _detect_peopleadmin(html, final_url)
     if ep:
         return {"ats": "peopleadmin", "endpoint": ep}
+    # Clean-JSON-API ATSes (public boards endpoints, no browser needed).
+    ep = _detect_greenhouse(html, final_url)
+    if ep:
+        return {"ats": "greenhouse", "endpoint": ep}
+    ep = _detect_lever(html, final_url)
+    if ep:
+        return {"ats": "lever", "endpoint": ep}
+    ep = _detect_smartrecruiters(html, final_url)
+    if ep:
+        return {"ats": "smartrecruiters", "endpoint": ep}
+    ep = _detect_ashby(html, final_url)
+    if ep:
+        return {"ats": "ashby", "endpoint": ep}
+    ep = _detect_workable(html, final_url)
+    if ep:
+        return {"ats": "workable", "endpoint": ep}
     return None
 
 
@@ -279,6 +295,77 @@ def _search_peopleadmin(endpoint: str, keyword: str, limit: int) -> list[dict]:
     return jobs
 
 
+# Greenhouse, Lever, SmartRecruiters, Ashby and Workable each expose a public
+# JSON board API keyed by a single org slug, so detection is just "find the slug,
+# build the API URL". The slug appears in the branded careers URL or an embedded
+# board script; for Greenhouse the embed form (?for=<token>) takes priority over
+# the host-path form so we don't mistake the literal "embed" segment for a token.
+_GREENHOUSE_FOR = re.compile(
+    r"greenhouse\.io/embed/job_board(?:/js)?\?for=([a-z0-9_]+)", re.IGNORECASE)
+_GREENHOUSE_HOST = re.compile(
+    r"(?:boards|job-boards)\.greenhouse\.io/(?:embed/job_board\?for=)?([a-z0-9_]+)",
+    re.IGNORECASE)
+
+
+def _detect_greenhouse(html: str, final_url: str) -> str | None:
+    blob = f"{final_url}\n{html}"
+    m = _GREENHOUSE_FOR.search(blob) or _GREENHOUSE_HOST.search(blob)
+    if not m or m.group(1) in ("embed", "job_board"):
+        return None
+    return f"https://boards-api.greenhouse.io/v1/boards/{m.group(1)}/jobs?content=true"
+
+
+_LEVER_LINK = re.compile(r"jobs\.lever\.co/([a-z0-9][a-z0-9-]*)", re.IGNORECASE)
+
+
+def _detect_lever(html: str, final_url: str) -> str | None:
+    m = _LEVER_LINK.search(final_url) or _LEVER_LINK.search(html)
+    if not m:
+        return None
+    return f"https://api.lever.co/v0/postings/{m.group(1)}?mode=json"
+
+
+# careers.smartrecruiters.com/<Company> (the path segment is the API identifier).
+_SR_LINK = re.compile(
+    r"(?:careers|jobs)\.smartrecruiters\.com/([A-Za-z0-9._-]+)", re.IGNORECASE)
+
+
+def _detect_smartrecruiters(html: str, final_url: str) -> str | None:
+    m = _SR_LINK.search(final_url) or _SR_LINK.search(html)
+    if not m:
+        return None
+    return f"https://api.smartrecruiters.com/v1/companies/{m.group(1)}/postings"
+
+
+_ASHBY_LINK = re.compile(r"jobs\.ashbyhq\.com/([A-Za-z0-9._-]+)", re.IGNORECASE)
+
+
+def _detect_ashby(html: str, final_url: str) -> str | None:
+    m = _ASHBY_LINK.search(final_url) or _ASHBY_LINK.search(html)
+    if not m:
+        return None
+    return f"https://api.ashbyhq.com/posting-api/job-board/{m.group(1)}"
+
+
+# Workable hosts branded boards at apply.workable.com/<account>/ and queries them
+# through a public POST search endpoint; the account slug is the API identifier.
+_WORKABLE_LINK = re.compile(
+    r"(?:apply\.workable\.com/|([a-z0-9-]+)\.workable\.com)", re.IGNORECASE)
+_WORKABLE_APPLY = re.compile(r"apply\.workable\.com/([a-z0-9-]+)", re.IGNORECASE)
+
+
+def _detect_workable(html: str, final_url: str) -> str | None:
+    blob = f"{final_url}\n{html}"
+    m = _WORKABLE_APPLY.search(blob)
+    account = m.group(1) if m else None
+    if not account:
+        m = re.search(r"([a-z0-9-]+)\.workable\.com", blob, re.IGNORECASE)
+        account = m.group(1) if m else None
+    if not account or account in ("apply", "www"):
+        return None
+    return f"https://apply.workable.com/api/v3/accounts/{account}/jobs"
+
+
 # ---------------------------------------------------------------------------
 # Search adapters
 # ---------------------------------------------------------------------------
@@ -298,6 +385,16 @@ def search(ats: str, endpoint: str, keyword: str, limit: int = 20) -> list[dict]
         return _search_taleo(endpoint, keyword, limit)
     if ats == "peopleadmin":
         return _search_peopleadmin(endpoint, keyword, limit)
+    if ats == "greenhouse":
+        return _search_greenhouse(endpoint, keyword, limit)
+    if ats == "lever":
+        return _search_lever(endpoint, keyword, limit)
+    if ats == "smartrecruiters":
+        return _search_smartrecruiters(endpoint, keyword, limit)
+    if ats == "ashby":
+        return _search_ashby(endpoint, keyword, limit)
+    if ats == "workable":
+        return _search_workable(endpoint, keyword, limit)
     raise ValueError(f"no search adapter for ats={ats!r}")
 
 
@@ -606,6 +703,156 @@ def _search_taleo(endpoint: str, keyword: str, limit: int) -> list[dict]:
             "posted": "",
         })
     return jobs
+
+
+def _kw_match(keyword: str, *fields: str) -> bool:
+    """True if the keyword (case-insensitive) appears in any of the given fields.
+    Used by the board APIs that have no server-side keyword filter, so we fetch
+    the full posting list once and filter locally."""
+    if not keyword:
+        return True
+    kw = keyword.lower()
+    return any(kw in (f or "").lower() for f in fields)
+
+
+def _search_greenhouse(endpoint: str, keyword: str, limit: int) -> list[dict]:
+    """Greenhouse job board API: one GET returns every live posting (title, URL,
+    location, updated date) with no server-side keyword filter, so we match the
+    keyword against the title locally."""
+    r = cf.get(endpoint, impersonate="chrome", timeout=30,
+               headers={"Accept": "application/json"})
+    r.raise_for_status()
+    jobs = []
+    for j in r.json().get("jobs", []):
+        title = (j.get("title") or "").strip()
+        if not _kw_match(keyword, title):
+            continue
+        jobs.append({
+            "title": title,
+            "url": j.get("absolute_url", ""),
+            "location": (j.get("location") or {}).get("name", "").strip(),
+            "country": "",
+            "time_type": "",
+            "posted": (j.get("updated_at") or "")[:10],
+        })
+        if len(jobs) >= limit:
+            break
+    return jobs
+
+
+def _search_lever(endpoint: str, keyword: str, limit: int) -> list[dict]:
+    """Lever postings API: returns a flat JSON list of postings. No server-side
+    keyword filter, so we match the keyword against the title locally."""
+    r = cf.get(endpoint, impersonate="chrome", timeout=30,
+               headers={"Accept": "application/json"})
+    r.raise_for_status()
+    jobs = []
+    for p in r.json():
+        title = (p.get("text") or "").strip()
+        if not _kw_match(keyword, title):
+            continue
+        cats = p.get("categories") or {}
+        jobs.append({
+            "title": title,
+            "url": p.get("hostedUrl", ""),
+            "location": (cats.get("location") or "").strip(),
+            "country": "",
+            "time_type": (cats.get("commitment") or "").strip(),
+            "posted": (p.get("createdAt") and _epoch_ms_date(p["createdAt"])) or "",
+        })
+        if len(jobs) >= limit:
+            break
+    return jobs
+
+
+def _search_smartrecruiters(endpoint: str, keyword: str, limit: int) -> list[dict]:
+    """SmartRecruiters posting API: supports a server-side keyword filter via `q`,
+    and returns structured location (city / region / 2-letter country)."""
+    company = endpoint.rstrip("/").split("/companies/")[1].split("/")[0]
+    r = cf.get(endpoint, impersonate="chrome", timeout=30,
+               headers={"Accept": "application/json"},
+               params={"q": keyword, "limit": min(limit, 100)})
+    r.raise_for_status()
+    jobs = []
+    for c in r.json().get("content", []):
+        loc = c.get("location") or {}
+        location = ", ".join(x for x in (loc.get("city"), loc.get("region")) if x)
+        jid = c.get("id", "")
+        jobs.append({
+            "title": (c.get("name") or "").strip(),
+            "url": f"https://jobs.smartrecruiters.com/{company}/{jid}" if jid else "",
+            "location": location,
+            "country": (loc.get("country") or "").upper(),
+            "time_type": (c.get("typeOfEmployment") or {}).get("label", ""),
+            "posted": (c.get("releasedDate") or "")[:10],
+        })
+        if len(jobs) >= limit:
+            break
+    return jobs
+
+
+def _search_ashby(endpoint: str, keyword: str, limit: int) -> list[dict]:
+    """Ashby job-board API: one GET returns every listed posting (title, jobUrl,
+    location, employmentType). No server-side keyword filter — match locally."""
+    r = cf.get(endpoint, impersonate="chrome", timeout=30,
+               headers={"Accept": "application/json"})
+    r.raise_for_status()
+    jobs = []
+    for j in r.json().get("jobs", []):
+        title = (j.get("title") or "").strip()
+        if not _kw_match(keyword, title):
+            continue
+        jobs.append({
+            "title": title,
+            "url": j.get("jobUrl", ""),
+            "location": (j.get("location") or "").strip(),
+            "country": "",
+            "time_type": (j.get("employmentType") or "").strip(),
+            "posted": (j.get("publishedAt") or "")[:10],
+        })
+        if len(jobs) >= limit:
+            break
+    return jobs
+
+
+def _search_workable(endpoint: str, keyword: str, limit: int) -> list[dict]:
+    """Workable account search API: POST the keyword and read back structured
+    postings (title, shortcode, city / region / 2-letter country code)."""
+    account = endpoint.rstrip("/").split("/accounts/")[1].split("/")[0]
+    r = cf.post(endpoint, impersonate="chrome", timeout=30,
+                headers={"Accept": "application/json", "Content-Type": "application/json"},
+                json={"query": keyword})
+    r.raise_for_status()
+    jobs = []
+    for j in r.json().get("results", []):
+        loc = j if isinstance(j.get("location"), str) else (j.get("location") or {})
+        if isinstance(loc, str):
+            location, country = loc, ""
+        else:
+            location = ", ".join(x for x in (loc.get("city"), loc.get("region")) if x)
+            country = (loc.get("countryCode") or loc.get("country") or "").upper()
+        shortcode = j.get("shortcode", "")
+        jobs.append({
+            "title": (j.get("title") or "").strip(),
+            "url": j.get("url") or (f"https://apply.workable.com/{account}/j/{shortcode}/"
+                                    if shortcode else ""),
+            "location": location,
+            "country": country,
+            "time_type": (j.get("type") or "").strip(),
+            "posted": (j.get("published") or j.get("created") or "")[:10],
+        })
+        if len(jobs) >= limit:
+            break
+    return jobs
+
+
+def _epoch_ms_date(ms) -> str:
+    """Format a Lever epoch-millisecond timestamp as YYYY-MM-DD (best effort)."""
+    try:
+        from datetime import datetime, timezone
+        return datetime.fromtimestamp(int(ms) / 1000, tz=timezone.utc).strftime("%Y-%m-%d")
+    except Exception:
+        return ""
 
 
 def _ldjson_jobposting(html: str) -> dict | None:
