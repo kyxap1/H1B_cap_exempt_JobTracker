@@ -195,6 +195,48 @@ def scrape_successfactors(page, base: str) -> list[dict]:
     return jobs
 
 
+_PAGEUP_JOB = re.compile(r"/en-us/job/\d+/", re.IGNORECASE)
+
+
+def scrape_pageup(page, base: str) -> list[dict]:
+    """Parse a PageUp search-results table (rendered in the browser, since branded
+    PageUp sites sit behind an AWS WAF JS challenge). Jobs are <tr> rows in
+    #search-results-content; columns vary per tenant, so map them by their <th>
+    header labels (Position / Location / Department / Open Date / Close Date)."""
+    soup = BeautifulSoup(page.content(), "html.parser")
+    labels = [th.get_text(" ", strip=True).lower()
+              for th in soup.select("#search-results th, #search-results-content th")]
+    jobs = []
+    for tr in soup.select("#search-results-content tr"):
+        a = tr.find("a", href=_PAGEUP_JOB)
+        if not a:
+            continue
+        tds = tr.find_all("td", recursive=False)
+        location, posted = "", ""
+        for i, td in enumerate(tds):
+            label = labels[i] if i < len(labels) else ""
+            text = td.get_text(" ", strip=True)
+            if ("location" in label or "campus" in label) and not location:
+                location = text
+            elif "open" in label and "date" in label:
+                posted = text
+        if not posted:
+            m = _DATE.search(tr.get_text(" ", strip=True))
+            posted = m.group(0) if m else ""
+        jobs.append({
+            "title": a.get_text(" ", strip=True),
+            "url": urljoin(base, a.get("href", "")),
+            "location": location,
+            # PageUp rows carry no country and often only a bare campus name; these
+            # tenants are all US H1B sponsors, so tag US so the US-location filter
+            # doesn't drop valid jobs whose location lacks a state token.
+            "country": "US",
+            "time_type": "",
+            "posted": posted,
+        })
+    return jobs
+
+
 # ---------------------------------------------------------------------------
 # Generic fallback
 # ---------------------------------------------------------------------------

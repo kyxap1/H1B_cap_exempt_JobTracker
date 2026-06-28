@@ -70,16 +70,27 @@ def download_file(url: str, dest: Path) -> None:
     r = cf_requests.get(url, impersonate="chrome", stream=True, timeout=300)
     r.raise_for_status()
     total = int(r.headers.get("content-length", 0))
+    # Live \r progress bar only on a terminal; in logs/non-TTY print at
+    # coarse milestones so we don't flood the output with thousands of lines.
+    is_tty = sys.stdout.isatty()
     downloaded = 0
+    next_milestone = 10
     with open(dest, "wb") as f:
         for chunk in r.iter_content(chunk_size=1024 * 1024):
             f.write(chunk)
             downloaded += len(chunk)
-            if total:
-                pct = downloaded / total * 100
+            if not total:
+                continue
+            pct = downloaded / total * 100
+            if is_tty:
                 print(f"\r  {pct:5.1f}%  ({downloaded // 1_000_000}MB / {total // 1_000_000}MB)",
                       end="", flush=True)
-    print()
+            elif pct >= next_milestone:
+                print(f"  {pct:5.1f}%  ({downloaded // 1_000_000}MB / {total // 1_000_000}MB)",
+                      flush=True)
+                next_milestone += 10
+    if is_tty and total:
+        print()
 
 
 # ---------------------------------------------------------------------------
