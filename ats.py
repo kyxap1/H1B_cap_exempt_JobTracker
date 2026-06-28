@@ -13,7 +13,8 @@ from __future__ import annotations
 
 import json
 import re
-from urllib.parse import quote, urljoin, urlparse
+import xml.etree.ElementTree as ET
+from urllib.parse import parse_qs, quote, urljoin, urlparse
 
 from bs4 import BeautifulSoup
 from curl_cffi import requests as cf
@@ -105,6 +106,15 @@ def detect(html: str, final_url: str = "") -> dict | None:
         # PageUp branded sites sit behind an AWS WAF JS challenge, so unlike the
         # others this one is searched through the browser, not plain HTTP.
         return {"ats": "pageup", "endpoint": ep, "transport": "browser"}
+    ep = _detect_oracle(html, final_url)
+    if ep:
+        return {"ats": "oracle-cloud", "endpoint": ep}
+    ep = _detect_taleo(html, final_url)
+    if ep:
+        return {"ats": "taleo", "endpoint": ep}
+    ep = _detect_peopleadmin(html, final_url)
+    if ep:
+        return {"ats": "peopleadmin", "endpoint": ep}
     return None
 
 
@@ -169,6 +179,106 @@ def _detect_pageup(html: str, final_url: str) -> str | None:
     return None
 
 
+# Oracle Recruiting Cloud (Fusion HCM) external candidate sites live on a pod host
+# <name>.fa.<dc>.oraclecloud.com and expose a public REST resource we can query
+# directly. The careers URL carries the site code as /sites/<CX_n>/, which the
+# REST finder needs; default to CX_1 (the common case) when it isn't in the URL.
+_ORACLE_LINK = re.compile(
+    r"https://([a-z0-9-]+\.fa\.[a-z0-9-]+\.oraclecloud\.com)", re.IGNORECASE
+)
+_ORACLE_SITE = re.compile(r"/sites/([A-Za-z0-9_]+)", re.IGNORECASE)
+
+
+def _detect_oracle(html: str, final_url: str) -> str | None:
+    m = _ORACLE_LINK.search(final_url) or _ORACLE_LINK.search(html)
+    if not m:
+        return None
+    host = m.group(1)
+    sm = _ORACLE_SITE.search(final_url) or _ORACLE_SITE.search(html)
+    site = sm.group(1) if sm else "CX_1"
+    return (f"https://{host}/hcmRestApi/resources/latest/"
+            f"recruitingCEJobRequisitions?siteNumber={site}")
+
+
+# Taleo Enterprise career sites live at <tenant>.taleo.net/careersection/<cs>/...
+# and serve results from a JSON REST endpoint (rest/jobboard/searchjobs) that
+# needs the section's numeric `portal` id (embedded in the page) plus a session
+# cookie from a prior GET. We carry host + careersection + portal in the endpoint
+# URL; _search_taleo rebuilds the REST call from them. (Taleo Business Edition on
+# *.tbe.taleo.net is a different product and is intentionally not matched here.)
+_TALEO_LINK = re.compile(
+    r"https://([a-z0-9-]+\.taleo\.net)/careersection/([^/?#]+)/", re.IGNORECASE
+)
+_TALEO_PORTAL = re.compile(r"portal[=\"':\s]+(\d{5,})", re.IGNORECASE)
+
+
+def _detect_taleo(html: str, final_url: str) -> str | None:
+    blob = f"{final_url}\n{html}"
+    m = _TALEO_LINK.search(final_url) or _TALEO_LINK.search(html)
+    if not m:
+        return None
+    host, cs = m.group(1), m.group(2)
+    pm = _TALEO_PORTAL.search(blob)
+    if not pm:
+        # Without the portal id the REST endpoint can't be queried; leave it for
+        # the fingerprint to label rather than returning a broken endpoint.
+        return None
+    return f"https://{host}/careersection/{cs}/jobsearch.ftl?portal={pm.group(1)}"
+
+
+# PeopleAdmin career sites expose an Atom job feed at /postings/search.atom. Most
+# live on <tenant>.peopleadmin.com, but many run on the institution's own domain
+# (e.g. uscjobs.sc.edu, uvmjobs.com) — those still carry "peopleadmin" markers in
+# their HTML (the product name and a pa-hrsuite asset bucket), so we fall back to
+# the page's own origin for the search base. (schooljobs.com shares the broad
+# fingerprint but is NeoGov's product, so it's handled there, not here.)
+_PEOPLEADMIN_LINK = re.compile(r"https://([a-z0-9-]+\.peopleadmin\.com)", re.IGNORECASE)
+_PEOPLEADMIN_MARK = re.compile(r"peopleadmin|pa-hrsuite", re.IGNORECASE)
+
+
+def _detect_peopleadmin(html: str, final_url: str) -> str | None:
+    m = _PEOPLEADMIN_LINK.search(final_url) or _PEOPLEADMIN_LINK.search(html)
+    if m:
+        return f"https://{m.group(1)}/postings/search"
+    if _PEOPLEADMIN_MARK.search(final_url) or _PEOPLEADMIN_MARK.search(html):
+        parsed = urlparse(final_url or "")
+        if parsed.scheme and parsed.netloc and "schooljobs.com" not in parsed.netloc:
+            return f"{parsed.scheme}://{parsed.netloc}/postings/search"
+    return None
+
+
+_ATOM_NS = {"a": "http://www.w3.org/2005/Atom"}
+
+
+def _search_peopleadmin(endpoint: str, keyword: str, limit: int) -> list[dict]:
+    """Read a PeopleAdmin career site's Atom job feed (/postings/search.atom),
+    which returns structured entries (title, link, published date) — far cleaner
+    than scraping the responsive HTML grid. The feed has no discrete location
+    field, and every tenant in this dataset is a US university, so country is
+    tagged US for the US-location filter."""
+    url = f"{endpoint}.atom?query={quote(keyword)}"
+    r = cf.get(url, impersonate="chrome", timeout=30)
+    r.raise_for_status()
+    root = ET.fromstring(r.content)
+    jobs = []
+    for e in root.findall("a:entry", _ATOM_NS)[:limit]:
+        title = (e.findtext("a:title", default="", namespaces=_ATOM_NS) or "").strip()
+        if not title:
+            continue
+        link_el = e.find("a:link", _ATOM_NS)
+        href = (link_el.get("href") if link_el is not None else "") or \
+            (e.findtext("a:id", default="", namespaces=_ATOM_NS) or "").strip()
+        jobs.append({
+            "title": title,
+            "url": href,
+            "location": "",
+            "country": "US",
+            "time_type": "",
+            "posted": (e.findtext("a:published", default="", namespaces=_ATOM_NS) or "").strip(),
+        })
+    return jobs
+
+
 # ---------------------------------------------------------------------------
 # Search adapters
 # ---------------------------------------------------------------------------
@@ -182,6 +292,12 @@ def search(ats: str, endpoint: str, keyword: str, limit: int = 20) -> list[dict]
         return _search_phenom(endpoint, keyword, limit)
     if ats == "icims":
         return _search_icims(endpoint, keyword, limit)
+    if ats == "oracle-cloud":
+        return _search_oracle(endpoint, keyword, limit)
+    if ats == "taleo":
+        return _search_taleo(endpoint, keyword, limit)
+    if ats == "peopleadmin":
+        return _search_peopleadmin(endpoint, keyword, limit)
     raise ValueError(f"no search adapter for ats={ats!r}")
 
 
@@ -359,6 +475,137 @@ def _icims_location(raw: str) -> tuple[str, str]:
     else:
         pretty = first
     return pretty, country
+
+
+def _search_oracle(endpoint: str, keyword: str, limit: int) -> list[dict]:
+    """Query an Oracle Recruiting Cloud pod's public REST resource. The job rows
+    come back fully structured (title, location, country code, posted date), so
+    no per-job detail fetch is needed."""
+    parsed = urlparse(endpoint)
+    host = f"{parsed.scheme}://{parsed.netloc}"
+    base = f"{host}{parsed.path}"
+    site = parse_qs(parsed.query).get("siteNumber", ["CX_1"])[0]
+    finder = (f'findReqs;siteNumber={site},limit={limit},'
+              f'keyword="{keyword}",sortBy="POSTING_DATES_DESC"')
+    r = cf.get(
+        base,
+        impersonate="chrome",
+        timeout=30,
+        headers={"Accept": "application/json"},
+        params={
+            "onlyData": "true",
+            "expand": "requisitionList.secondaryLocations,flexFieldsFacet.values",
+            "finder": finder,
+        },
+    )
+    r.raise_for_status()
+    items = r.json().get("items", [])
+    reqs = items[0].get("requisitionList", []) if items else []
+    jobs = []
+    for rq in reqs:
+        jid = str(rq.get("Id", "")).strip()
+        secondary = rq.get("secondaryLocations") or []
+        extra = ", ".join(s.get("Name", "") for s in secondary if s.get("Name"))
+        location = (rq.get("PrimaryLocation") or "").strip()
+        if extra:
+            location = f"{location}; {extra}" if location else extra
+        jobs.append({
+            "title": (rq.get("Title") or "").strip(),
+            "url": (f"{host}/hcmUI/CandidateExperience/en/sites/{site}/job/{jid}"
+                    if jid else ""),
+            "location": location,
+            "country": (rq.get("PrimaryLocationCountry") or "").strip(),
+            "time_type": (rq.get("WorkplaceTypeCode") or "").strip(),
+            "posted": (rq.get("PostedDate") or "").strip(),
+        })
+        if len(jobs) >= limit:
+            break
+    return jobs
+
+
+# Body the Taleo job board expects; KEYWORD is filled in per query. sortBy "3"
+# with descending order is the site's "most recent" sort.
+_TALEO_BODY = {
+    "multilineEnabled": False,
+    "sortingSelection": {"sortBySelectionParam": "3", "ascendingSortingOrder": "false"},
+    "fieldData": {"fields": {"KEYWORD": "", "LOCATION": ""}, "valid": True},
+    "filterSelectionParam": {"searchFilterSelections": [
+        {"id": "ORGANIZATION", "selectedValues": []},
+        {"id": "LOCATION", "selectedValues": []},
+        {"id": "JOB_FIELD", "selectedValues": []},
+        {"id": "POSTING_DATE", "selectedValues": []}]},
+    "advancedSearchFiltersSelectionParam": {"searchFilterSelections": []},
+    "pageNo": 1,
+}
+
+
+def _taleo_location(locs: list) -> tuple[str, str]:
+    """Taleo encodes each location as STATE-City-Site (e.g. "MN-Minneapolis-Main"),
+    occasionally prefixed with the country. Returns (pretty, country)."""
+    if not locs:
+        return "", ""
+    first = str(locs[0])
+    parts = [p.strip() for p in first.split("-") if p.strip()]
+    country = ""
+    if parts and re.fullmatch(r"[A-Za-z]{2}", parts[0]):
+        country = "US"
+        pretty = f"{parts[1]}, {parts[0]}" if len(parts) >= 2 else first
+    elif "united states" in first.lower():
+        country = "US"
+        pretty = ", ".join(parts[1:3]) or first
+    else:
+        pretty = ", ".join(parts[:2]) or first
+    if len(locs) > 1:
+        pretty += f" (+{len(locs) - 1} more)"
+    return pretty, country
+
+
+def _search_taleo(endpoint: str, keyword: str, limit: int) -> list[dict]:
+    """Query a Taleo Enterprise career section's job board. Each result's `column`
+    list holds the configured cell values; `linkedColumn` / `locationsColumns`
+    give the indexes of the title and location cells (the order is tenant-specific,
+    so we follow those hints rather than assume fixed positions)."""
+    parsed = urlparse(endpoint)
+    host = parsed.netloc
+    cs = parsed.path.split("/careersection/")[1].split("/")[0]
+    portal = parse_qs(parsed.query).get("portal", [""])[0]
+    base = f"https://{host}"
+
+    sess = cf.Session(impersonate="chrome")
+    sess.get(f"{base}/careersection/{cs}/jobsearch.ftl?lang=en", timeout=30)
+    body = json.loads(json.dumps(_TALEO_BODY))
+    body["fieldData"]["fields"]["KEYWORD"] = keyword
+    r = sess.post(
+        f"{base}/careersection/rest/jobboard/searchjobs?lang=en&portal={portal}",
+        json=body, timeout=30,
+        headers={"tz": "GMT+00:00", "accept": "application/json, text/javascript, */*; q=0.01"},
+    )
+    r.raise_for_status()
+    jobs = []
+    for jr in r.json().get("requisitionList", [])[:limit]:
+        cols = jr.get("column", [])
+        li = jr.get("linkedColumn", 0)
+        title = cols[li] if isinstance(li, int) and 0 <= li < len(cols) else (cols[0] if cols else "")
+        location, country = "", ""
+        loc_idxs = jr.get("locationsColumns", [])
+        if loc_idxs and isinstance(loc_idxs[0], int) and loc_idxs[0] < len(cols):
+            raw = cols[loc_idxs[0]]
+            try:
+                locs = json.loads(raw) if str(raw).lstrip().startswith("[") else [raw]
+            except (json.JSONDecodeError, ValueError):
+                locs = [raw]
+            location, country = _taleo_location(locs)
+        contest = str(jr.get("contestNo", "")).strip()
+        jobs.append({
+            "title": str(title).strip(),
+            "url": (f"{base}/careersection/{cs}/jobdetail.ftl?job={contest}&lang=en"
+                    if contest else ""),
+            "location": location,
+            "country": country,
+            "time_type": "",
+            "posted": "",
+        })
+    return jobs
 
 
 def _ldjson_jobposting(html: str) -> dict | None:
