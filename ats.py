@@ -14,6 +14,7 @@ from __future__ import annotations
 import json
 import re
 import xml.etree.ElementTree as ET
+from html import unescape
 from urllib.parse import parse_qs, quote, urljoin, urlparse
 
 from bs4 import BeautifulSoup
@@ -140,6 +141,15 @@ def detect(html: str, final_url: str = "") -> dict | None:
     ep = _detect_interfolio(html, final_url)
     if ep:
         return {"ats": "interfolio", "endpoint": ep}
+    ep = _detect_cornerstone(html, final_url)
+    if ep:
+        return {"ats": "cornerstone", "endpoint": ep}
+    ep = _detect_brassring(html, final_url)
+    if ep:
+        return {"ats": "brassring", "endpoint": ep}
+    ep = _detect_peoplesoft(html, final_url)
+    if ep:
+        return {"ats": "peoplesoft", "endpoint": ep}
     return None
 
 
@@ -447,6 +457,12 @@ def search(ats: str, endpoint: str, keyword: str, limit: int = 20) -> list[dict]
         return _search_paylocity(endpoint, keyword, limit)
     if ats == "interfolio":
         return _search_interfolio(endpoint, keyword, limit)
+    if ats == "cornerstone":
+        return _search_cornerstone(endpoint, keyword, limit)
+    if ats == "brassring":
+        return _search_brassring(endpoint, keyword, limit)
+    if ats == "peoplesoft":
+        return _search_peoplesoft(endpoint, keyword, limit)
     raise ValueError(f"no search adapter for ats={ats!r}")
 
 
@@ -972,6 +988,238 @@ def _search_interfolio(endpoint: str, keyword: str, limit: int) -> list[dict]:
             "country": "",
             "time_type": "",
             "posted": (j.get("open_date_raw") or "")[:10],
+        })
+    return jobs
+
+
+# Cornerstone (CSOD) career sites are a SPA whose job search runs through a shared
+# cross-tenant API (us.api.csod.com) that requires a tenant-scoped Bearer JWT. That
+# token is embedded in the career-site page HTML, so we fetch the page, lift the
+# JWT, and POST the search with it. The careerSiteId is the number in the URL path.
+_CSOD_LINK = re.compile(
+    r"https://([a-z0-9-]+)\.csod\.com/ux/ats/careersite/(\d+)/", re.IGNORECASE)
+_CSOD_JWT = re.compile(
+    r"eyJ[A-Za-z0-9_-]{10,}\.[A-Za-z0-9_-]{10,}\.[A-Za-z0-9_-]{5,}")
+
+
+def _detect_cornerstone(html: str, final_url: str) -> str | None:
+    m = _CSOD_LINK.search(final_url) or _CSOD_LINK.search(html)
+    if not m:
+        return None
+    host, site = m.group(1), m.group(2)
+    return f"https://{host}.csod.com/ux/ats/careersite/{site}/home"
+
+
+def _mdy_date(s: str) -> str:
+    """Normalize a US M/D/YYYY date (CSOD, BrassRing) to YYYY-MM-DD."""
+    m = re.match(r"\s*(\d{1,2})/(\d{1,2})/(\d{4})", s or "")
+    if not m:
+        return ""
+    mo, d, y = m.groups()
+    return f"{y}-{int(mo):02d}-{int(d):02d}"
+
+
+def _csod_location(locs: list) -> tuple[str, str]:
+    """Read the first CSOD location. Tenants expose varying detail — some only the
+    2-letter country, others city/state too — so we join whatever is present."""
+    if not locs:
+        return "", ""
+    l = locs[0]
+    city = l.get("city") or ""
+    state = l.get("state") or ""
+    country = (l.get("country") or "").upper()
+    pretty = ", ".join(x for x in (city, state) if x)
+    if len(locs) > 1:
+        pretty += f" (+{len(locs) - 1} more)" if pretty else f"{len(locs)} locations"
+    return pretty, country
+
+
+def _search_cornerstone(endpoint: str, keyword: str, limit: int) -> list[dict]:
+    """Query a Cornerstone career site: lift the Bearer JWT from the site page,
+    then POST the keyword search to the shared CSOD job-search API."""
+    m = _CSOD_LINK.search(endpoint + "/")
+    host, site = m.group(1), int(m.group(2))
+    sess = cf.Session(impersonate="chrome")
+    html = sess.get(endpoint, timeout=30).text
+    jm = _CSOD_JWT.search(html)
+    if not jm:
+        return []
+    body = {"careerSiteId": site, "careerSitePageId": 1, "pageNumber": 1,
+            "pageSize": max(limit, 25), "cultureId": 1, "searchText": keyword,
+            "cultureName": "en-US", "states": [], "countryCodes": [], "cities": [],
+            "placeID": "", "radius": None, "postingsWithinDays": None,
+            "customFieldCheckboxKeys": [], "customFieldDropdowns": [],
+            "customFieldRadios": []}
+    r = sess.post("https://us.api.csod.com/rec-job-search/external/jobs",
+                  json=body, timeout=30,
+                  headers={"authorization": f"Bearer {jm.group(0)}",
+                           "csod-accept-language": "en-US",
+                           "accept": "application/json",
+                           "content-type": "application/json"})
+    r.raise_for_status()
+    jobs = []
+    for rq in r.json().get("data", {}).get("requisitions", [])[:limit]:
+        location, country = _csod_location(rq.get("locations") or [])
+        rid = rq.get("requisitionId")
+        jobs.append({
+            "title": (rq.get("displayJobTitle") or "").strip(),
+            "url": (f"https://{host}.csod.com/ux/ats/careersite/{site}/home/requisition/{rid}?c={host}"
+                    if rid else ""),
+            "location": location,
+            "country": country,
+            "time_type": "",
+            "posted": _mdy_date(rq.get("postingEffectiveDate")),
+        })
+    return jobs
+
+
+# IBM Kenexa BrassRing (responsive TGnewUI) job search is a clean JSON POST to
+# /TgNewUI/Search/Ajax/MatchedJobs — once you supply the per-session guards that
+# the page hands out for free: the hidden #CookieValue input (sent as body
+# EncryptedSessionValue) and the __RequestVerificationToken (sent as the RFT
+# header), plus the cookies from the same GET. The site is keyed by partnerid +
+# siteid, which the careers URL already carries (the legacy cim_home.asp gateway
+# redirects into this same responsive UI, so we always rebuild the sjobs URL).
+_BR_CV = re.compile(r'(?:id|name)="CookieValue"[^>]*\bvalue="([^"]*)"', re.IGNORECASE)
+_BR_RFT = re.compile(
+    r'name="__RequestVerificationToken"[^>]*\bvalue="([^"]*)"', re.IGNORECASE)
+# formtext fields that are clearly an org unit, not a location.
+_BR_DEPT = re.compile(
+    r"\b(dept|department|unit|division|div|office|college|school|center|clinic)\b",
+    re.IGNORECASE)
+
+
+def _detect_brassring(html: str, final_url: str) -> str | None:
+    blob = f"{final_url}\n{html}"
+    if "brassring.com" not in blob.lower():
+        return None
+    pm = re.search(r"partnerid=(\d+)", blob, re.IGNORECASE)
+    sm = re.search(r"siteid=(\d+)", blob, re.IGNORECASE)
+    if not (pm and sm):
+        return None
+    return ("https://sjobs.brassring.com/TGnewUI/Search/Home/Home"
+            f"?partnerid={pm.group(1)}&siteid={sm.group(1)}")
+
+
+def _brassring_location(q: dict) -> str:
+    """BrassRing exposes location in a tenant-configured formtext field (no fixed
+    name), so pick the first formtext value that looks like a place rather than a
+    department or a numeric/code field."""
+    for name, val in q.items():
+        if not name.startswith("formtext") or not val:
+            continue
+        v = str(val).strip()
+        if not v or any(ch.isdigit() for ch in v) or _BR_DEPT.search(v):
+            continue
+        if len(v) <= 30 and len(v.split()) <= 3:
+            return v
+    return ""
+
+
+def _search_brassring(endpoint: str, keyword: str, limit: int) -> list[dict]:
+    """Query a BrassRing responsive career site: GET the home page to pick up the
+    session guards (#CookieValue + verification token + cookies), then POST the
+    keyword search to the MatchedJobs JSON endpoint. All sites in this dataset are
+    US employers, so country is tagged US for the location filter."""
+    q = parse_qs(urlparse(endpoint).query)
+    pid, sid = q.get("partnerid", [""])[0], q.get("siteid", [""])[0]
+    sess = cf.Session(impersonate="chrome")
+    html = sess.get(endpoint, timeout=40).text
+    cv, rft = _BR_CV.search(html), _BR_RFT.search(html)
+    if not (cv and rft):
+        return []
+    body = {"PartnerId": pid, "SiteId": sid, "Keyword": keyword, "Location": "",
+            "KeywordCustomSolrFields": "", "LocationCustomSolrFields": "",
+            "TurnOffHttps": False, "LinkID": "", "EncryptedSessionValue": cv.group(1),
+            "FacetFilterFields": {"Facet": []},
+            "PowerSearchOptions": {"PowerSearchOption": []}, "SortType": ""}
+    r = sess.post("https://sjobs.brassring.com/TgNewUI/Search/Ajax/MatchedJobs",
+                  json=body, timeout=40,
+                  headers={"RFT": rft.group(1), "X-Requested-With": "XMLHttpRequest",
+                           "Content-Type": "application/json; charset=UTF-8"})
+    r.raise_for_status()
+    jobs = []
+    for j in r.json().get("Jobs", {}).get("Job", [])[:limit]:
+        qd = {it.get("QuestionName"): it.get("Value") for it in j.get("Questions", [])}
+        title = (qd.get("jobtitle") or "").strip()
+        if not title:
+            continue
+        jobs.append({
+            "title": title,
+            "url": j.get("Link") or "",
+            "location": _brassring_location(qd),
+            "country": "US",
+            "time_type": "",
+            "posted": _mdy_date(qd.get("lastupdated")),
+        })
+    return jobs
+
+
+# PeopleSoft HCM Fluid Candidate Gateway (component HRS_HRAM_FL.HRS_CG_SEARCH_FL)
+# has no JSON API, but its keyword search IS reachable over plain HTTP with a
+# cookie jar: GET the search page to open an anonymous session and read the
+# page-state guards (ICSID, ICStateNum) plus the install-specific keyword field
+# name, then POST the ICAjax search. The reply is a Partial-Page-Refresh XML whose
+# job rows expose title / job-id / location as id='SCH_JOB_TITLE$n' etc. The site
+# code (SiteId) is needed only to build job-detail deep-links; it defaults to 1
+# and some careers URLs carry an explicit one. All tenants here are US employers.
+_PSOFT_LINK = re.compile(
+    r"(https?://[^?#\s\"']*/c/HRS_HRAM_FL\.HRS_CG_SEARCH_FL\.GBL)", re.IGNORECASE)
+_PSOFT_SITEID = re.compile(r"[Ss]ite[Ii]d=(\d+)")
+_PSOFT_ICSID = re.compile(r"id='ICSID'\s+value='([^']*)'")
+_PSOFT_ICSTATE = re.compile(r"id='ICStateNum'\s+value='([^']*)'")
+_PSOFT_KWFIELD = re.compile(r"HRS_SCH_WRK_HRS_SCH_TEXT\d*")
+_PSOFT_SEARCHBTN = re.compile(r"HRS_SCH_WRK[A-Z0-9_]*SEARCH_BTN")
+_PSOFT_TITLE = re.compile(r"id='SCH_JOB_TITLE\$(\d+)'\s*>([^<]*)<")
+_PSOFT_JOBID = re.compile(
+    r"id='HRS_APP_JBSCH_I_HRS_JOB_OPENING_ID\$(\d+)'\s*>([^<]*)<")
+_PSOFT_LOC = re.compile(r"id='LOCATION\$(\d+)'\s*>([^<]*)<")
+
+
+def _detect_peoplesoft(html: str, final_url: str) -> str | None:
+    m = _PSOFT_LINK.search(final_url) or _PSOFT_LINK.search(html)
+    if not m:
+        return None
+    sm = _PSOFT_SITEID.search(final_url or "") or _PSOFT_SITEID.search(html or "")
+    site = sm.group(1) if sm else "1"
+    return f"{m.group(1)}?SiteId={site}"
+
+
+def _search_peoplesoft(endpoint: str, keyword: str, limit: int) -> list[dict]:
+    """Keyword-search a PeopleSoft Candidate Gateway over HTTP: open a session,
+    lift the page-state guards + the install's keyword field name, POST the ICAjax
+    search, and parse the PPR-XML job rows."""
+    base, _, query = endpoint.partition("?")
+    site = parse_qs(query).get("SiteId", ["1"])[0]
+    sess = cf.Session(impersonate="chrome")
+    page = sess.get(f"{base}?Page=HRS_APP_SCHJOB_FL&Action=U", timeout=45).text
+    icsid = _PSOFT_ICSID.search(page)
+    icstate = _PSOFT_ICSTATE.search(page)
+    kwfield = _PSOFT_KWFIELD.search(page)
+    if not (icsid and icstate and kwfield):
+        return []
+    btn = _PSOFT_SEARCHBTN.search(page)
+    data = {"ICAJAX": "1", "ICStateNum": icstate.group(1), "ICSID": icsid.group(1),
+            "ICAction": btn.group(0) if btn else "HRS_SCH_WRK_FLU_HRS_SEARCH_BTN",
+            kwfield.group(0): keyword}
+    r = sess.post(base, data=data, timeout=45,
+                  headers={"X-Requested-With": "XMLHttpRequest",
+                           "Content-Type": "application/x-www-form-urlencoded"})
+    r.raise_for_status()
+    body = r.text
+    ids = dict(_PSOFT_JOBID.findall(body))
+    locs = dict(_PSOFT_LOC.findall(body))
+    jobs = []
+    for idx, title in _PSOFT_TITLE.findall(body)[:limit]:
+        jid = ids.get(idx, "")
+        jobs.append({
+            "title": unescape(title).strip(),
+            "url": (f"{base}?Page=HRS_APP_JBPST_FL&Action=U&SiteId={site}"
+                    f"&JobOpeningId={jid}&PostingSeq=1" if jid else ""),
+            "location": unescape(locs.get(idx, "")).strip(),
+            "country": "US",
+            "time_type": "",
+            "posted": "",
         })
     return jobs
 
