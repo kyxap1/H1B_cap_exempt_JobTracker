@@ -30,6 +30,59 @@ _WORKDAY_LINK = re.compile(
 )
 
 
+# Broad ATS fingerprints — used to LABEL a careers / portal page even when we
+# don't (yet) have a search adapter for it. detect() below resolves a search
+# endpoint only for the subset we can query; this wider table drives coverage
+# stats and the decision to follow a landing page's "view jobs" link. Order
+# matters: the first match wins, so list the more specific patterns first.
+_FINGERPRINTS: tuple[tuple[str, "re.Pattern[str]"], ...] = tuple(
+    (name, re.compile(pat, re.IGNORECASE)) for name, pat in (
+        ("workday",         r"myworkdayjobs\.com|\.workday\.com|workdaycdn"),
+        ("icims",           r"\.icims\.com"),
+        ("phenom",          r"phenom|radancy|jibe|/search-jobs"),
+        ("greenhouse",      r"greenhouse\.io|boards\.greenhouse|grnh\.se"),
+        ("lever",           r"jobs\.lever\.co|//[^\"']*lever\.co/"),
+        ("smartrecruiters", r"smartrecruiters\.com"),
+        ("ashby",           r"ashbyhq\.com"),
+        ("jobvite",         r"jobvite\.com"),
+        ("taleo",           r"taleo\.net|taleo\.com|tbe\.taleo"),
+        ("successfactors",  r"successfactors|sapsf|/careersection"),
+        ("oracle-cloud",    r"oraclecloud\.com|/hcmui/|/recruitingce|fa\.oraclecloud"),
+        ("oracle-irec",     r"irecruitment|/oa_html/"),
+        ("brassring",       r"brassring\.com|kenexa"),
+        ("peoplesoft",      r"/psc/|peoplesoft|/psp/|hcmprd"),
+        ("peopleadmin",     r"peopleadmin\.com|schooljobs\.com"),
+        ("cornerstone",     r"\.csod\.com"),
+        ("ultipro",         r"ultipro\.com|ukg\.com"),
+        ("adp",             r"workforcenow\.adp\.com|myjobs\.adp|recruiting\.adp"),
+        ("paycom",          r"paycomonline\.net"),
+        ("paylocity",       r"paylocity\.com"),
+        ("interfolio",      r"interfolio\.com"),
+        ("neogov",          r"neogov\.com|governmentjobs\.com"),
+        # PageUp betrays itself statically in the URL path (its branded sites use
+        # /en-us/listing/ and /en-us/filter/), so we catch it without racing the
+        # late-loading widget XHR that branded domains hide it behind.
+        ("pageup",          r"pageuppeople\.com|/en-us/(listing|filter)\b"),
+        ("dayforce",        r"dayforcehcm|dayforce\.com"),
+        ("workable",        r"workable\.com"),
+        ("bamboohr",        r"bamboohr\.com"),
+        ("jazzhr",          r"applytojob\.com|jazzhr"),
+        ("recruitee",       r"recruitee\.com"),
+    )
+)
+
+
+def fingerprint(text: str) -> str | None:
+    """Return the ATS name a page belongs to (or None) by matching known host /
+    path signatures anywhere in `text` (pass the final URL + rendered HTML). This
+    only LABELS the ATS; detect() resolves a usable search endpoint for the
+    subset we have adapters for."""
+    for name, rx in _FINGERPRINTS:
+        if rx.search(text):
+            return name
+    return None
+
+
 def detect(html: str, final_url: str = "") -> dict | None:
     """Identify the ATS behind a careers page and resolve its search endpoint.
 

@@ -15,9 +15,11 @@ from __future__ import annotations
 
 import argparse
 import json
+import re
 import sys
 import time
 import random
+from urllib.parse import urljoin, urlparse
 
 from playwright.sync_api import sync_playwright
 from playwright_stealth import Stealth
@@ -30,7 +32,9 @@ from config import (
 from ats_scrapers import scrape_it_jobs
 
 PAGE_TIMEOUT = 30_000
-RENDER_WAIT = 4_000
+# Short initial settle; _poll_ats does the real waiting and exits early once the
+# ATS reveals itself, so a long fixed wait here would only slow the common case.
+RENDER_WAIT = 2_000
 
 
 # ---------------------------------------------------------------------------
@@ -69,16 +73,152 @@ def load_companies() -> list[dict]:
 # Detection (cached)
 # ---------------------------------------------------------------------------
 
+# Anchor text / href that leads from an HR landing page to the real job portal,
+# and the patterns that lead somewhere else (admissions, login, benefits) and must
+# be rejected — these are the false positives seen on .edu / hospital HR pages.
+_PORTAL_TEXT = re.compile(
+    r"search\s+jobs|view\s+(all\s+)?(open\s+)?(jobs|positions|openings)|"
+    r"job\s+(openings|search|opportunities)|current\s+openings|browse\s+jobs|"
+    r"all\s+jobs|open\s+positions|external\s+applicant|see\s+(all\s+)?jobs|"
+    r"find\s+jobs|view\s+careers",
+    re.IGNORECASE,
+)
+_PORTAL_HREF = re.compile(
+    r"/(jobs|careers|search|openings|positions|requisition|vacanc|"
+    r"job-search|job_search|joblist|listings?)\b",
+    re.IGNORECASE,
+)
+_PORTAL_REJECT = re.compile(
+    r"admiss|applynow|apply/pages|financial[-_ ]?aid|/aid\b|scholarship|"
+    r"alumni|giving|donate|undergrad|graduate-program|tuition|"
+    r"login|sign[-_ ]?in|register|/pfml|wellness|benefits-|leave-of|"
+    # ATS-vendor marketing pages (a "powered by PageUp" footer, etc.) — not a portal
+    r"powered-by|/faqs?\b|/about-us|/our-clients|/customers|/products|/resources",
+    re.IGNORECASE,
+)
+
+
+def find_jobs_portal(page) -> str:
+    """From an HR landing page, pick the link most likely to be the real job
+    portal. Scores anchors by job-portal text/href signals (and a known-ATS host
+    in the href) and rejects the admissions / login / benefits links that pollute
+    university HR pages. Returns "" if nothing scores high enough."""
+    base = page.url
+    best, best_score = "", 0
+    try:
+        anchors = page.locator("a[href]").all()
+    except Exception:
+        return ""
+    for a in anchors:
+        try:
+            text = (a.inner_text() or "").strip()
+            href = a.get_attribute("href") or ""
+        except Exception:
+            continue
+        if not href or href.startswith(("#", "mailto:", "tel:", "javascript")):
+            continue
+        full = urljoin(base, href)
+        blob = f"{text} {full}"
+        if _PORTAL_REJECT.search(blob):
+            continue
+        score = 0
+        if _PORTAL_TEXT.search(text):
+            score += 3
+        if _PORTAL_HREF.search(full):
+            score += 2
+        if ats.fingerprint(full):
+            score += 5
+        if urlparse(full).netloc != urlparse(base).netloc:
+            score += 1
+        if score > best_score:
+            best, best_score = full, score
+    return best if best_score >= 3 else ""
+
+
+def _detect_blob(page, net: list[str]) -> str:
+    """Everything we fingerprint against: final URL + rendered HTML + the URLs of
+    every request the page fired. SPA careers pages reveal their ATS only through
+    network calls (a PageUp widget, a Workday cxs XHR), not the initial HTML."""
+    try:
+        content = page.content()
+    except Exception:
+        content = ""
+    return f"{page.url} {content} {' '.join(net)}"
+
+
+def _poll_ats(page, net: list[str], budget_ms: int = 6000, step_ms: int = 1000):
+    """Poll the rendered page + captured network until an ATS reveals itself, or
+    the budget runs out. Returns (info, label): `info` is a searchable endpoint
+    dict (best), else `label` is the fingerprinted ATS name, else both None.
+
+    Early exit on the first signal: SPA careers pages inject their ATS widget /
+    fire their first XHR at unpredictable times, so a fixed wait is either too
+    short (misses it) or wastefully long. A searchable ATS is always caught by
+    detect() before fingerprint(), so any fingerprint hit means a non-searchable
+    ATS and there is nothing to gain by waiting longer."""
+    waited = 0
+    while True:
+        blob = _detect_blob(page, net)
+        info = ats.detect(blob, page.url)
+        if info:
+            return info, None
+        label = ats.fingerprint(blob)
+        if label:
+            return None, label
+        if waited >= budget_ms:
+            return None, None
+        page.wait_for_timeout(step_ms)
+        waited += step_ms
+
+
 def detect_ats(page, careers_url: str) -> dict | None:
     """Render the careers page and fingerprint its ATS. Returns
-    {"ats": ..., "endpoint": ...} or None."""
+    {"ats": ..., "endpoint": ...} for a searchable ATS, or — when the page is an
+    HR landing page whose real portal we resolved but can't yet search —
+    {"ats": None, "portal": <url>, "fingerprint": <name>}, or None.
+
+    Detection looks at three things, in order: the rendered HTML, the URLs of all
+    requests the page fired (SPA widgets / XHRs betray the ATS), and — if neither
+    is itself a searchable ATS — the "view jobs" link followed to the real portal.
+    """
+    net: list[str] = []
+    handler = lambda r: net.append(r.url)
+    page.on("request", handler)
     try:
-        page.goto(careers_url, timeout=PAGE_TIMEOUT, wait_until="domcontentloaded")
-        page.wait_for_timeout(RENDER_WAIT)
-    except Exception as e:
-        print(f"  [detect error] {e}")
+        try:
+            page.goto(careers_url, timeout=PAGE_TIMEOUT, wait_until="domcontentloaded")
+            page.wait_for_timeout(RENDER_WAIT)
+        except Exception as e:
+            print(f"  [detect error] {e}")
+            return None
+
+        info, label = _poll_ats(page, net)
+        if info:
+            return info
+        # A label here means the careers page IS the ATS portal (just not one we
+        # can search yet). No label → it's an HR brochure; follow its job link.
+        portal = page.url if label else ""
+        if not label:
+            link = find_jobs_portal(page)
+            if link and link != page.url:
+                print(f"  -> following job-portal link: {link}")
+                try:
+                    page.goto(link, timeout=PAGE_TIMEOUT, wait_until="domcontentloaded")
+                    page.wait_for_timeout(RENDER_WAIT)
+                    info, label = _poll_ats(page, net)
+                    if info:
+                        return info
+                    portal = page.url
+                except Exception as e:
+                    print(f"  [portal error] {e}")
+
+        if label:
+            print(f"  [looks like {label} — no search adapter yet, will scrape]")
+        if portal or label:
+            return {"ats": None, "portal": portal, "fingerprint": label}
         return None
-    return ats.detect(page.content(), page.url)
+    finally:
+        page.remove_listener("request", handler)
 
 
 # ---------------------------------------------------------------------------
@@ -161,13 +301,13 @@ def main(limit: int | None = None) -> None:
                 ATS_CACHE.write_text(json.dumps(ats_cache, indent=2))
             info = ats_cache[careers_url]
 
-            label = info.get("ats") or "fallback"
+            label = info.get("ats") or info.get("fingerprint") or "fallback"
             print(f"[{i}/{len(companies)}] {company}  ({label})", flush=True)
 
             if info.get("ats"):
                 jobs = jobs_via_api(info)
             else:
-                jobs = jobs_via_fallback(page, careers_url)
+                jobs = jobs_via_fallback(page, info.get("portal") or careers_url)
 
             added = 0
             for j in jobs:
