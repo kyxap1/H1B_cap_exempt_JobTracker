@@ -19,7 +19,7 @@ import re
 import sys
 import time
 import random
-from urllib.parse import urljoin, urlparse
+from urllib.parse import quote, urljoin, urlparse
 
 from playwright.sync_api import sync_playwright
 from playwright_stealth import Stealth
@@ -29,7 +29,7 @@ from config import (
     COMPANIES_JSON, JOBS_JSONL, SEEN_URLS_FILE, ATS_CACHE,
     AGGREGATORS, POLITE_DELAY, JOB_KEYWORDS, now_pst, is_us_location,
 )
-from ats_scrapers import scrape_it_jobs
+from ats_scrapers import scrape_it_jobs, scrape_pageup
 
 PAGE_TIMEOUT = 30_000
 # Short initial settle; _poll_ats does the real waiting and exits early once the
@@ -242,6 +242,34 @@ def jobs_via_api(info: dict) -> list[dict]:
     return out
 
 
+def jobs_via_browser(page, info: dict) -> list[dict]:
+    """Keyword-search an ATS that must be driven through the browser (PageUp sits
+    behind an AWS WAF JS challenge that plain HTTP can't pass). One navigation per
+    keyword to the server-rendered results table."""
+    out, seen = [], set()
+    for kw in JOB_KEYWORDS:
+        url = f"{info['endpoint']}?search-keyword={quote(kw)}"
+        try:
+            page.goto(url, timeout=PAGE_TIMEOUT, wait_until="domcontentloaded")
+            # Wait for either the results table or a clear "no results" state; the
+            # selector wait also gives the WAF challenge time to resolve.
+            try:
+                page.wait_for_selector(
+                    "#search-results-content a[href*='/en-us/job/']", timeout=12_000
+                )
+            except Exception:
+                continue  # no matches for this keyword
+        except Exception as e:
+            print(f"  [pageup error: {kw}] {e}")
+            continue
+        for j in scrape_pageup(page, url):
+            if not j["url"] or j["url"] in seen:
+                continue
+            seen.add(j["url"])
+            out.append({**j, "matched_keyword": kw})
+    return out
+
+
 def jobs_via_fallback(page, careers_url: str) -> list[dict]:
     """Old landing-page scrape for ATSes we don't have an adapter for."""
     jobs = scrape_it_jobs(careers_url, page)
@@ -277,18 +305,26 @@ def main(limit: int | None = None) -> None:
     total_new = 0
     out = open(JOBS_JSONL, "a", encoding="utf-8")
 
+    ctx_kwargs = dict(
+        user_agent=(
+            "Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) "
+            "AppleWebKit/537.36 (KHTML, like Gecko) Chrome/121.0 Safari/537.36"
+        ),
+        viewport={"width": 1400, "height": 900},
+        locale="en-US",
+    )
+
     with sync_playwright() as p:
         browser = p.chromium.launch(headless=True)
-        ctx = browser.new_context(
-            user_agent=(
-                "Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) "
-                "AppleWebKit/537.36 (KHTML, like Gecko) Chrome/121.0 Safari/537.36"
-            ),
-            viewport={"width": 1400, "height": 900},
-            locale="en-US",
-        )
+        ctx = browser.new_context(**ctx_kwargs)
         page = ctx.new_page()
         Stealth().apply_stealth_sync(page)
+
+        # PageUp (and other browser-transport ATSes) sit behind an AWS WAF whose
+        # CAPTCHA is tripped by the stealth fingerprint, so they are searched on a
+        # separate plain page. Created lazily — only if such a company shows up.
+        plain_ctx = None
+        plain_page = None
 
         for i, row in enumerate(companies, 1):
             company = row["company"]
@@ -304,7 +340,12 @@ def main(limit: int | None = None) -> None:
             label = info.get("ats") or info.get("fingerprint") or "fallback"
             print(f"[{i}/{len(companies)}] {company}  ({label})", flush=True)
 
-            if info.get("ats"):
+            if info.get("transport") == "browser":
+                if plain_page is None:
+                    plain_ctx = browser.new_context(**ctx_kwargs)
+                    plain_page = plain_ctx.new_page()
+                jobs = jobs_via_browser(plain_page, info)
+            elif info.get("ats"):
                 jobs = jobs_via_api(info)
             else:
                 jobs = jobs_via_fallback(page, info.get("portal") or careers_url)
@@ -338,6 +379,8 @@ def main(limit: int | None = None) -> None:
             print(f"  {added} new job(s)")
             time.sleep(random.uniform(*POLITE_DELAY))
 
+        if plain_ctx is not None:
+            plain_ctx.close()
         browser.close()
 
     out.close()

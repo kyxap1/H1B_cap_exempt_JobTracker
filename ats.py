@@ -98,6 +98,11 @@ def detect(html: str, final_url: str = "") -> dict | None:
     ep = _detect_icims(html, final_url)
     if ep:
         return {"ats": "icims", "endpoint": ep}
+    ep = _detect_pageup(html, final_url)
+    if ep:
+        # PageUp branded sites sit behind an AWS WAF JS challenge, so unlike the
+        # others this one is searched through the browser, not plain HTTP.
+        return {"ats": "pageup", "endpoint": ep, "transport": "browser"}
     return None
 
 
@@ -138,6 +143,28 @@ def _detect_icims(html: str, final_url: str) -> str | None:
         return None
     tenant = m.group(1)
     return f"https://{tenant}.icims.com/jobs/search"
+
+
+# PageUp career sites live at <origin>[/<site>]/en-us/(listing|filter|job)/...
+# The path segment before /en-us/ (e.g. "/st") is the tenant's site code and must
+# be preserved when we build the keyword-search URL.
+_PAGEUP_PATH = re.compile(
+    r"(https?://[^\s\"'<>]+?)/en-us/(?:listing|filter|job)\b", re.IGNORECASE
+)
+
+
+def _detect_pageup(html: str, final_url: str) -> str | None:
+    m = _PAGEUP_PATH.search(final_url) or _PAGEUP_PATH.search(html)
+    if m:
+        return f"{m.group(1)}/en-us/filter/"
+    # Branded domains expose PageUp only through the careers-static.pageuppeople.com
+    # widget host (seen in the page's network calls). Resolve the search URL from
+    # the careers page's own origin.
+    if "pageuppeople.com" in (final_url + html).lower():
+        parsed = urlparse(final_url or "")
+        if parsed.scheme and parsed.netloc:
+            return f"{parsed.scheme}://{parsed.netloc}/en-us/filter/"
+    return None
 
 
 # ---------------------------------------------------------------------------
