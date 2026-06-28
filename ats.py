@@ -131,6 +131,15 @@ def detect(html: str, final_url: str = "") -> dict | None:
     ep = _detect_workable(html, final_url)
     if ep:
         return {"ats": "workable", "endpoint": ep}
+    ep = _detect_ultipro(html, final_url)
+    if ep:
+        return {"ats": "ultipro", "endpoint": ep}
+    ep = _detect_paylocity(html, final_url)
+    if ep:
+        return {"ats": "paylocity", "endpoint": ep}
+    ep = _detect_interfolio(html, final_url)
+    if ep:
+        return {"ats": "interfolio", "endpoint": ep}
     return None
 
 
@@ -366,6 +375,43 @@ def _detect_workable(html: str, final_url: str) -> str | None:
     return f"https://apply.workable.com/api/v3/accounts/{account}/jobs"
 
 
+# UKG/UltiPro recruiting boards live at recruiting[N].ultipro.com/<tenant>/JobBoard/
+# <board-guid>/ and answer a JSON POST (LoadSearchResults) with fully structured
+# rows (title, address, posted date). We carry host + tenant + board in the
+# endpoint and rebuild the POST / detail URLs from it.
+_ULTIPRO_LINK = re.compile(
+    r"(recruiting\d*\.(?:ultipro|ukg)\.com)/([A-Za-z0-9]+)/JobBoard/([0-9a-fA-F-]{36})",
+    re.IGNORECASE)
+
+
+def _detect_ultipro(html: str, final_url: str) -> str | None:
+    m = _ULTIPRO_LINK.search(final_url) or _ULTIPRO_LINK.search(html)
+    if not m:
+        return None
+    host, tenant, board = m.group(1), m.group(2), m.group(3)
+    return f"https://{host}/{tenant}/JobBoard/{board}"
+
+
+# Paylocity recruiting boards are server-rendered (Angular Universal): the full
+# job list is inlined into the page as a `window.pageData` JSON object and the
+# in-page search just filters it client-side — there is no per-query XHR API. So
+# we fetch the board once and read that JSON payload (structured city/state/
+# country per job), which is the data source, not screen-scraped markup. The
+# board is keyed by a company GUID in the URL.
+_PAYLOCITY_LINK = re.compile(
+    r"recruiting\.paylocity\.com/recruiting/jobs/All/([0-9a-fA-F-]{36})"
+    r"(?:/([^/?#\"']+))?", re.IGNORECASE)
+
+
+def _detect_paylocity(html: str, final_url: str) -> str | None:
+    m = _PAYLOCITY_LINK.search(final_url) or _PAYLOCITY_LINK.search(html)
+    if not m:
+        return None
+    guid = m.group(1)
+    name = m.group(2) or "Careers"
+    return f"https://recruiting.paylocity.com/recruiting/jobs/All/{guid}/{name}"
+
+
 # ---------------------------------------------------------------------------
 # Search adapters
 # ---------------------------------------------------------------------------
@@ -395,6 +441,12 @@ def search(ats: str, endpoint: str, keyword: str, limit: int = 20) -> list[dict]
         return _search_ashby(endpoint, keyword, limit)
     if ats == "workable":
         return _search_workable(endpoint, keyword, limit)
+    if ats == "ultipro":
+        return _search_ultipro(endpoint, keyword, limit)
+    if ats == "paylocity":
+        return _search_paylocity(endpoint, keyword, limit)
+    if ats == "interfolio":
+        return _search_interfolio(endpoint, keyword, limit)
     raise ValueError(f"no search adapter for ats={ats!r}")
 
 
@@ -840,6 +892,123 @@ def _search_workable(endpoint: str, keyword: str, limit: int) -> list[dict]:
             "country": country,
             "time_type": (j.get("type") or "").strip(),
             "posted": (j.get("published") or j.get("created") or "")[:10],
+        })
+        if len(jobs) >= limit:
+            break
+    return jobs
+
+
+def _ultipro_location(locs: list) -> tuple[str, str]:
+    """Read the first UltiPro location's structured address. Country comes back as
+    a 3-letter code (USA), normalized to the 2-letter US the location filter uses."""
+    if not locs:
+        return "", ""
+    addr = (locs[0].get("Address") or {})
+    city = addr.get("City") or ""
+    state = (addr.get("State") or {}).get("Code") or ""
+    cc = (addr.get("Country") or {}).get("Code") or ""
+    country = "US" if cc in ("USA", "US") else cc
+    pretty = ", ".join(x for x in (city, state) if x)
+    if len(locs) > 1:
+        pretty += f" (+{len(locs) - 1} more)"
+    return pretty, country
+
+
+def _search_ultipro(endpoint: str, keyword: str, limit: int) -> list[dict]:
+    """Query a UKG/UltiPro recruiting board via its JSON search endpoint. Rows are
+    structured (title, address, posted date), so no per-job detail fetch needed."""
+    r = cf.post(
+        f"{endpoint}/JobBoardView/LoadSearchResults",
+        impersonate="chrome", timeout=30,
+        headers={"Accept": "application/json", "Content-Type": "application/json"},
+        json={"opportunitySearch": {"Top": limit, "Skip": 0, "SearchText": keyword,
+                                    "Sort": [{"Order": "Desc", "PropertyName": "PostedDate"}]}},
+    )
+    r.raise_for_status()
+    jobs = []
+    for o in r.json().get("opportunities", [])[:limit]:
+        location, country = _ultipro_location(o.get("Locations") or [])
+        oid = o.get("Id", "")
+        full = o.get("FullTime")
+        jobs.append({
+            "title": (o.get("Title") or "").strip(),
+            "url": f"{endpoint}/OpportunityDetail?opportunityId={oid}" if oid else "",
+            "location": location,
+            "country": country,
+            "time_type": "Full time" if full else ("Part time" if full is False else ""),
+            "posted": (o.get("PostedDate") or "")[:10],
+        })
+    return jobs
+
+
+# Interfolio faculty boards (apply.interfolio.com/<institution>/positions) are an
+# Angular SPA fed by a public JSON search API on logic.interfolio.com, keyed by
+# the institution/tenant id in the URL. The API filters by keyword server-side.
+_INTERFOLIO_LINK = re.compile(r"apply\.interfolio\.com/(\d+)/positions", re.IGNORECASE)
+
+
+def _detect_interfolio(html: str, final_url: str) -> str | None:
+    m = _INTERFOLIO_LINK.search(final_url) or _INTERFOLIO_LINK.search(html)
+    if not m:
+        return None
+    return f"https://logic.interfolio.com/byc-search/{m.group(1)}/public_job_boards"
+
+
+def _search_interfolio(endpoint: str, keyword: str, limit: int) -> list[dict]:
+    """Query an Interfolio institution's public job board API. Results are
+    structured (name, location, id, open date); `search` filters server-side."""
+    r = cf.get(endpoint, impersonate="chrome", timeout=30,
+               headers={"Accept": "application/json"},
+               params={"search": keyword, "limit": limit, "page": 1,
+                       "sort_by": "name", "sort_order": "asc", "unit_name": ""})
+    r.raise_for_status()
+    jobs = []
+    for j in r.json().get("results", [])[:limit]:
+        pid = j.get("id")
+        jobs.append({
+            "title": (j.get("name") or "").strip(),
+            "url": f"https://apply.interfolio.com/{pid}" if pid else "",
+            "location": (j.get("location") or "").strip(),
+            "country": "",
+            "time_type": "",
+            "posted": (j.get("open_date_raw") or "")[:10],
+        })
+    return jobs
+
+
+_PAYLOCITY_DATA = re.compile(r"window\.pageData\s*=\s*(\{.*?\});", re.S)
+
+
+def _search_paylocity(endpoint: str, keyword: str, limit: int) -> list[dict]:
+    """Read a Paylocity board's inlined `window.pageData` JSON (the full job list)
+    and filter by keyword locally — the site itself searches client-side, so one
+    fetch returns everything with structured city / state / country per job."""
+    html = cf.get(endpoint, impersonate="chrome", timeout=30).text
+    m = _PAYLOCITY_DATA.search(html)
+    if not m:
+        return []
+    data = json.loads(m.group(1))
+    jobs = []
+    for j in data.get("Jobs", []):
+        title = (j.get("JobTitle") or "").strip()
+        if not _kw_match(keyword, title):
+            continue
+        loc = j.get("JobLocation") or {}
+        city, state = loc.get("City") or "", loc.get("State") or ""
+        cc = loc.get("Country") or ""
+        country = "US" if cc in ("USA", "US") else cc
+        location = ", ".join(x for x in (city, state) if x) or (j.get("LocationName") or "")
+        if j.get("IsRemote"):
+            location = (location + " (Remote)").strip()
+        jid = j.get("JobId")
+        jobs.append({
+            "title": title,
+            "url": (f"https://recruiting.paylocity.com/Recruiting/Jobs/Details/{jid}"
+                    if jid else ""),
+            "location": location,
+            "country": country,
+            "time_type": "",
+            "posted": (j.get("PublishedDate") or "")[:10],
         })
         if len(jobs) >= limit:
             break
