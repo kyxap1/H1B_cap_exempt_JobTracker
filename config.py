@@ -67,6 +67,11 @@ AGGREGATOR_BLOCKLIST = (
     "linkedin.com", "indeed.com", "glassdoor.com", "ziprecruiter.com",
     "h1bgrader.com", "myvisajobs.com", "monster.com", "wikipedia.org",
     "google.com", "youtube.com", "facebook.com", "twitter.com",
+    # Job boards / higher-ed aggregators: they host an employer's listings but
+    # are not the employer's own portal, so they're the wrong careers_page.
+    "simplyhired.com", "careerbuilder.com", "dice.com", "snagajob.com",
+    "chronicle.com", "insidehighered.com", "higheredjobs.com",
+    "academickeys.com", "hercjobs.org", "jobs.ac.uk", "schooljobs.com",
 )
 
 # jobs.py / ats_scrapers.py import this name; it's the same blocklist.
