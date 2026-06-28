@@ -29,6 +29,7 @@ CHECKPOINT     = DATA_DIR / "h1b-cap-exempt-checkpoint.json"
 JOBS_JSONL     = DATA_DIR / "it-jobs.jsonl"
 SEEN_URLS_FILE = DATA_DIR / "seen-job-urls.json"
 ATS_CACHE      = CACHE_DIR / "ats-cache.json"
+SERPER_CACHE   = CACHE_DIR / "serper-cache.json"              # Google search results
 
 # Create the dirs on import so every entry point (sponsors / jobs / cron) can
 # write its outputs without each one repeating mkdir calls.

@@ -11,9 +11,16 @@ from urllib.parse import urlparse
 import requests
 
 import ats
-from config import CAREERS_KEYWORDS, AGGREGATOR_BLOCKLIST, polite_sleep
+from config import CAREERS_KEYWORDS, AGGREGATOR_BLOCKLIST, SERPER_CACHE, polite_sleep
 
 SERPER_API_KEY = os.environ.get("SERPER_API_KEY", "")
+
+# A real job portal scores at least this; once we have one we stop firing
+# further Serper queries for the same company (the free tier is rate-limited).
+_STRONG_SCORE = 6
+# Hard cap on Serper queries per company, so a full refresh of ~650 weak
+# entries stays within the monthly quota (≤2 × 650 ≈ 1300 calls).
+_MAX_QUERIES = 2
 
 # URL shapes that mark an actual job portal (vs. an HR brochure page).
 _PORTAL_URL = re.compile(
@@ -30,7 +37,29 @@ _BROCHURE = re.compile(
 _PORTAL_HOST = ("jobs.", "careers.", "apply.", "employment.", "recruiting.", "jobsearch.")
 
 
+def _load_cache() -> dict:
+    if SERPER_CACHE.exists():
+        try:
+            return json.loads(SERPER_CACHE.read_text())
+        except (json.JSONDecodeError, OSError):
+            pass
+    return {}
+
+
+def _save_cache(cache: dict) -> None:
+    SERPER_CACHE.write_text(json.dumps(cache, ensure_ascii=False, indent=2))
+
+
 def google_search(query: str, num: int = 10) -> list[str]:
+    """Return result links for a query, reusing a persisted cache so the same
+    query never costs a second Serper call. Cache key includes `num` because a
+    different result count is a different request."""
+    cache = _load_cache()
+    key = f"{num}:{query}"
+    if key in cache:
+        print("  [cache] " + query)
+        return cache[key]
+
     if not SERPER_API_KEY:
         sys.exit(
             "\nSerper API key not set. Google blocks automated search without an API key.\n"
@@ -45,10 +74,14 @@ def google_search(query: str, num: int = 10) -> list[str]:
             timeout=15,
         )
         resp.raise_for_status()
-        return [r["link"] for r in resp.json().get("organic", [])]
+        links = [r["link"] for r in resp.json().get("organic", [])]
     except Exception as e:
         print(f"  [serper error] {e}")
         return []
+
+    cache[key] = links
+    _save_cache(cache)
+    return links
 
 
 def _score_careers(url: str) -> int:
@@ -76,16 +109,18 @@ def find_careers_page(company: str) -> str:
     """Resolve a company's real job portal. Picks the highest-scoring result
     across a few queries, preferring an actual ATS / job-search URL over the HR
     brochure page that a bare "<company> careers" search usually returns first."""
+    queries = (f"{company} careers", f"{company} jobs", f"{company} job openings apply")
     candidates: list[str] = []
-    for query in (f"{company} careers", f"{company} jobs", f"{company} job openings apply"):
+    best, best_score = "", 0
+    for query in queries[:_MAX_QUERIES]:
         candidates.extend(google_search(query))
         polite_sleep()
-
-    best, best_score = "", 0
-    for u in dict.fromkeys(candidates):   # dedupe, preserve order
-        s = _score_careers(u)
-        if s > best_score:
-            best, best_score = u, s
+        for u in dict.fromkeys(candidates):   # dedupe, preserve order
+            s = _score_careers(u)
+            if s > best_score:
+                best, best_score = u, s
+        if best_score >= _STRONG_SCORE:       # already found a real portal
+            break
     if best:
         return best
 
