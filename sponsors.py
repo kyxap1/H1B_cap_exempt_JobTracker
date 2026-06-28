@@ -15,6 +15,7 @@ from __future__ import annotations
 import argparse
 import json
 import shutil
+import sys
 from datetime import datetime
 
 from config import (
@@ -22,7 +23,7 @@ from config import (
     Company, normalize_name, polite_sleep, title_case,
 )
 from dol_parser import download_file, parse_year
-from careers_finder import find_careers_page
+from careers_finder import find_careers_page, _score_careers
 
 
 def json_has_data(path) -> bool:
@@ -54,6 +55,50 @@ def load_checkpoint() -> dict:
 
 def save_checkpoint(data: dict) -> None:
     CHECKPOINT.write_text(json.dumps(data, indent=2))
+
+
+def refresh_careers(threshold: int = 4, limit: int | None = None) -> None:
+    """Re-resolve careers_page for companies whose current URL scores below
+    `threshold` (i.e. looks like an HR brochure rather than a real job portal),
+    keeping the new URL only when it scores strictly better. The sponsor JSON is
+    backed up first; the checkpoint cache is updated so the change persists."""
+    if not json_has_data(COMPANIES_JSON):
+        sys.exit(f"No data in {COMPANIES_JSON.name}; run the build first.")
+    records = json.loads(COMPANIES_JSON.read_text())
+    backup_json()
+
+    state = load_checkpoint()
+    enrichment = state.get("enrichment", {})
+
+    weak = [r for r in records if _score_careers((r.get("careers_page") or "").strip()) < threshold]
+    if limit:
+        weak = weak[:limit]
+    print(f"{len(weak)} careers pages score below {threshold} — re-resolving"
+          + (f" (limited to {limit})" if limit else ""))
+
+    changed = 0
+    for i, rec in enumerate(weak, 1):
+        company = rec["company"]
+        old = (rec.get("careers_page") or "").strip()
+        print(f"[{i}/{len(weak)}] {company}\n  old: {old or '(none)'}  (score {_score_careers(old)})")
+        try:
+            new = find_careers_page(company)
+        except Exception as e:
+            print(f"  [error] {e}")
+            continue
+        if new and _score_careers(new) > _score_careers(old):
+            rec["careers_page"] = new
+            enrichment.setdefault(normalize_name(company), {})["careers_page"] = new
+            changed += 1
+            print(f"  new: {new}  (score {_score_careers(new)})  [UPDATED]")
+        else:
+            print("  kept (no better candidate)")
+        polite_sleep()
+
+    state["enrichment"] = enrichment
+    save_checkpoint(state)
+    COMPANIES_JSON.write_text(json.dumps(records, ensure_ascii=False, indent=2))
+    print(f"\nUpdated {changed}/{len(weak)} careers pages → {COMPANIES_JSON.name}")
 
 
 def main(force: bool = False) -> None:
@@ -143,8 +188,20 @@ if __name__ == "__main__":
         help="rebuild even if h1b-cap-exempt-sponsors.json already exists "
              "(a timestamped backup is made first)",
     )
+    parser.add_argument(
+        "--refresh-careers", action="store_true",
+        help="re-resolve brochure-like careers pages to real job portals "
+             "(updates the existing JSON in place; a backup is made first)",
+    )
+    parser.add_argument(
+        "--limit", type=int, default=None,
+        help="with --refresh-careers, only process the first N weak entries",
+    )
     args = parser.parse_args()
     try:
-        main(force=args.force)
+        if args.refresh_careers:
+            refresh_careers(limit=args.limit)
+        else:
+            main(force=args.force)
     except KeyboardInterrupt:
         print("\nInterrupted. Progress saved; re-run to resume.")
